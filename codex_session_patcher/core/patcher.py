@@ -48,25 +48,25 @@ def clean_session_jsonl(
     if not assistant_msgs:
         return lines, False, []
 
-    # 只处理最后一个助手消息
-    last_idx, last_msg = assistant_msgs[-1]
-    content = extract_text_content(last_msg)
+    if mock_response is None:
+        mock_response = MOCK_RESPONSE
 
-    if detector.detect(content):
-        # 记录修改详情
-        change = ChangeDetail(
-            line_num=last_idx + 1,
-            change_type='replace'
-        )
-        if show_content:
-            change.original_content = content[:500] + ('...' if len(content) > 500 else '')
-            change.new_content = MOCK_RESPONSE
-        changes.append(change)
+    # 处理所有拒绝的助手消息
+    for msg_idx, msg in assistant_msgs:
+        content = extract_text_content(msg)
+        if detector.detect(content):
+            change = ChangeDetail(
+                line_num=msg_idx + 1,
+                change_type='replace'
+            )
+            if show_content:
+                change.original_content = content[:500] + ('...' if len(content) > 500 else '')
+                change.new_content = mock_response
+            changes.append(change)
 
-        # 替换内容
-        updated_msg = update_text_content(last_msg, MOCK_RESPONSE)
-        lines[last_idx] = updated_msg
-        modified = True
+            updated_msg = update_text_content(msg, mock_response)
+            lines[msg_idx] = updated_msg
+            modified = True
 
     # 删除推理内容
     reasoning_items = get_reasoning_items(lines)

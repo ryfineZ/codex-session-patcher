@@ -1,0 +1,147 @@
+/* 主题变量 - 暗色主题 */
+:root {
+  /* 主色调 */
+  --color-primary: #18a058;
+  --color-primary-hover: #36ad6a;
+  --color-primary-pressed: #0c7a43;
+
+  /* 背景色 */
+  --color-bg-1: #1a1a1a;
+  --color-bg-2: #2d2d2d;
+  --color-bg-3: #3a3a3a;
+  --color-bg-4: #4a4a4a;
+
+  /* 文字色 */
+  --color-text-1: #ffffff;
+  --color-text-2: #cccccc;
+  --color-text-3: #888888;
+  --color-text-4: #666666;
+
+  /* 边框色 */
+  --color-border: #3a3a3a;
+  --color-border-light: #2a2a2a;
+
+  /* 状态色 */
+  --color-success: #18a058;
+  --color-warning: #f0a020;
+  --color-error: #d03050;
+  --color-info: #2080f0;
+
+  /* 阴影 */
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.4);
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* 过渡 */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+
+  /* 断点 */
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+
+  /* 侧边栏宽度 */
+  --sidebar-width: 280px;
+  --sidebar-collapsed-width: 60px;
+
+  /* 头部高度 */
+  --header-height: 56px;
+
+  /* 日志面板高度 */
+  --log-panel-height: 180px;
+}
+
+/* 基础重置 */
+* {
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--color-text-1);
+  background: var(--color-bg-1);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-bg-3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-bg-4);
+}
+
+/* 响应式工具类 */
+@media (max-width: 768px) {
+  .hide-mobile {
+    display: none !important;
+  }
+}
+
+@media (min-width: 769px) {
+  .show-mobile {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1024px) {
+  .hide-tablet {
+    display: none !important;
+  }
+}
+
+/* 动画 */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn var(--transition-normal);
+}
+
+.slide-in {
+  animation: slideIn var(--transition-normal);
+}
