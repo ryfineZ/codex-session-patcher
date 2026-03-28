@@ -42,33 +42,38 @@ def handle_ctf_status():
     print('安全测试配置状态')
     print('=' * 40)
 
+    # Codex 状态
+    print('\n[Codex CLI]')
     if status.installed:
-        print('状态: ✅ 已安装')
-        print(f'配置文件: {status.config_path}')
-        print(f'Prompt 文件: {status.prompt_path}')
-        print()
-        print('使用命令: codex -p ctf')
-        print()
-        print('适用场景:')
-        print('  - CTF 比赛')
-        print('  - 授权渗透测试')
-        print('  - Bug Bounty')
-        print('  - 安全学习/研究')
+        print('  状态: ✅ 已安装')
+        print(f'  配置文件: {status.config_path}')
+        print(f'  Prompt 文件: {status.prompt_path}')
+        print('  激活命令: codex -p ctf')
     else:
-        print('状态: ❌ 未安装')
-        print()
-        print('安装命令: codex-patcher --install-ctf-config')
+        print('  状态: ❌ 未安装')
+        print('  安装命令: codex-patcher --install-ctf-config')
+
+    # Claude Code 状态
+    print('\n[Claude Code]')
+    if status.claude_installed:
+        print('  状态: ✅ 已安装')
+        print(f'  工作空间: {status.claude_workspace_path}')
+        print(f'  CLAUDE.md: {status.claude_prompt_path}')
+        print('  激活命令: cd ~/.claude-ctf-workspace && claude')
+    else:
+        print('  状态: ❌ 未安装')
+        print('  安装命令: codex-patcher --install-claude-ctf')
 
     print()
     print('注意: 修改后需要新开会话才能生效')
 
 
 def handle_ctf_install():
-    """安装 CTF 配置"""
+    """安装 Codex CTF 配置"""
     from .ctf_config import CTFConfigInstaller
     installer = CTFConfigInstaller()
 
-    print('正在安装安全测试配置...')
+    print('正在安装 Codex 安全测试配置...')
     success, message = installer.install()
 
     if success:
@@ -82,16 +87,48 @@ def handle_ctf_install():
 
 
 def handle_ctf_uninstall():
-    """卸载 CTF 配置"""
+    """卸载 Codex CTF 配置"""
     from .ctf_config import CTFConfigInstaller
     installer = CTFConfigInstaller()
 
-    print('正在卸载安全测试配置...')
+    print('正在卸载 Codex 安全测试配置...')
     success, message = installer.uninstall()
 
     if success:
         print(f'✅ {message}')
         print('已恢复到默认配置')
+    else:
+        print(f'❌ {message}')
+
+
+def handle_claude_ctf_install():
+    """安装 Claude Code CTF 配置"""
+    from .ctf_config import ClaudeCodeCTFInstaller
+    installer = ClaudeCodeCTFInstaller()
+
+    print('正在安装 Claude Code 安全测试配置...')
+    success, message = installer.install()
+
+    if success:
+        print(f'✅ {message}')
+        print()
+        print('激活命令: cd ~/.claude-ctf-workspace && claude')
+        print()
+        print('注意: 需要从 CTF 工作空间目录启动 Claude Code')
+    else:
+        print(f'❌ {message}')
+
+
+def handle_claude_ctf_uninstall():
+    """卸载 Claude Code CTF 配置"""
+    from .ctf_config import ClaudeCodeCTFInstaller
+    installer = ClaudeCodeCTFInstaller()
+
+    print('正在卸载 Claude Code 安全测试配置...')
+    success, message = installer.uninstall()
+
+    if success:
+        print(f'✅ {message}')
     else:
         print(f'❌ {message}')
 
@@ -208,10 +245,13 @@ def main():
     parser.add_argument('--host', default='127.0.0.1', help='Web UI 监听地址 (默认: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=8080, help='Web UI 端口 (默认: 8080)')
 
-    # CTF 配置参数
-    parser.add_argument('--install-ctf-config', action='store_true', help='安装安全测试配置')
-    parser.add_argument('--uninstall-ctf-config', action='store_true', help='卸载安全测试配置')
-    parser.add_argument('--ctf-status', action='store_true', help='查看安全测试配置状态')
+    # CTF 配置参数 — Codex
+    parser.add_argument('--install-ctf-config', action='store_true', help='安装 Codex 安全测试配置')
+    parser.add_argument('--uninstall-ctf-config', action='store_true', help='卸载 Codex 安全测试配置')
+    parser.add_argument('--ctf-status', action='store_true', help='查看安全测试配置状态（Codex + Claude Code）')
+    # CTF 配置参数 — Claude Code
+    parser.add_argument('--install-claude-ctf', action='store_true', help='安装 Claude Code 安全测试配置')
+    parser.add_argument('--uninstall-claude-ctf', action='store_true', help='卸载 Claude Code 安全测试配置')
 
     # 提示词改写参数
     parser.add_argument('--rewrite', type=str, metavar='REQUEST', help='改写提示词')
@@ -229,6 +269,14 @@ def main():
 
     if args.uninstall_ctf_config:
         handle_ctf_uninstall()
+        return
+
+    if args.install_claude_ctf:
+        handle_claude_ctf_install()
+        return
+
+    if args.uninstall_claude_ctf:
+        handle_claude_ctf_uninstall()
         return
 
     # 提示词改写

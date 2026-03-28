@@ -646,7 +646,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @router.get("/ctf/status", response_model=CTFStatusResponse)
 async def get_ctf_status():
-    """获取 CTF 配置状态"""
+    """获取 CTF 配置状态（Codex + Claude Code）"""
     from codex_session_patcher.ctf_config import check_ctf_status
     status = check_ctf_status()
     return CTFStatusResponse(
@@ -656,6 +656,11 @@ async def get_ctf_status():
         profile_available=status.profile_available,
         config_path=status.config_path,
         prompt_path=status.prompt_path,
+        claude_installed=status.claude_installed,
+        claude_workspace_exists=status.claude_workspace_exists,
+        claude_prompt_exists=status.claude_prompt_exists,
+        claude_workspace_path=status.claude_workspace_path,
+        claude_prompt_path=status.claude_prompt_path,
     )
 
 
@@ -697,6 +702,46 @@ async def uninstall_ctf_config():
     )
 
 
+@router.post("/ctf/claude/install", response_model=CTFInstallResponse)
+async def install_claude_ctf_config():
+    """安装 Claude Code CTF 配置"""
+    from codex_session_patcher.ctf_config import ClaudeCodeCTFInstaller
+    installer = ClaudeCodeCTFInstaller()
+    success, message = installer.install()
+
+    await manager.broadcast(WSMessage(
+        type="log",
+        data={"level": "success" if success else "error", "message": message}
+    ))
+
+    return CTFInstallResponse(
+        success=success,
+        message=message,
+        profile_command="",
+        activation_command="cd ~/.claude-ctf-workspace && claude",
+    )
+
+
+@router.post("/ctf/claude/uninstall", response_model=CTFInstallResponse)
+async def uninstall_claude_ctf_config():
+    """卸载 Claude Code CTF 配置"""
+    from codex_session_patcher.ctf_config import ClaudeCodeCTFInstaller
+    installer = ClaudeCodeCTFInstaller()
+    success, message = installer.uninstall()
+
+    await manager.broadcast(WSMessage(
+        type="log",
+        data={"level": "success" if success else "error", "message": message}
+    ))
+
+    return CTFInstallResponse(
+        success=success,
+        message=message,
+        profile_command="",
+        activation_command="",
+    )
+
+
 # ─── 提示词改写 API ─────────────────────────────────────────────────────────
 
 @router.post("/prompt-rewrite", response_model=PromptRewriteResponse)
@@ -724,6 +769,7 @@ async def rewrite_prompt(request: PromptRewriteRequest):
             settings.ai_endpoint,
             settings.ai_key,
             settings.ai_model,
+            target=request.target,
         )
         return PromptRewriteResponse(
             success=True,

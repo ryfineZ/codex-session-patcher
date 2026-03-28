@@ -9,7 +9,10 @@ from typing import Optional
 
 import httpx
 
-from codex_session_patcher.ctf_config.templates import PROMPT_REWRITER_SYSTEM
+from codex_session_patcher.ctf_config.templates import (
+    PROMPT_REWRITER_SYSTEM,
+    PROMPT_REWRITER_SYSTEM_CLAUDE,
+)
 
 
 async def rewrite_prompt(
@@ -17,6 +20,7 @@ async def rewrite_prompt(
     ai_endpoint: str,
     ai_key: str,
     ai_model: str,
+    target: str = "codex",
 ) -> tuple[str, str]:
     """
     改写提示词
@@ -41,12 +45,13 @@ async def rewrite_prompt(
     if ai_key:
         headers['Authorization'] = f'Bearer {ai_key}'
 
+    system_prompt = PROMPT_REWRITER_SYSTEM_CLAUDE if target == "claude_code" else PROMPT_REWRITER_SYSTEM
     user_message = f"请改写以下请求：\n\n{original_request}"
 
     body = {
         'model': ai_model,
         'messages': [
-            {'role': 'system', 'content': PROMPT_REWRITER_SYSTEM},
+            {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': user_message},
         ],
         'max_tokens': 1024,

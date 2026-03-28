@@ -144,12 +144,19 @@ class WSMessage(BaseModel):
 
 class CTFStatusResponse(BaseModel):
     """CTF 配置状态响应"""
+    # Codex
     installed: bool
     config_exists: bool
     prompt_exists: bool
     profile_available: bool
     config_path: Optional[str] = None
     prompt_path: Optional[str] = None
+    # Claude Code
+    claude_installed: bool = False
+    claude_workspace_exists: bool = False
+    claude_prompt_exists: bool = False
+    claude_workspace_path: Optional[str] = None
+    claude_prompt_path: Optional[str] = None
 
 
 class CTFInstallResponse(BaseModel):
@@ -157,11 +164,13 @@ class CTFInstallResponse(BaseModel):
     success: bool
     message: str
     profile_command: str = "codex -p ctf"
+    activation_command: str = ""
 
 
 class PromptRewriteRequest(BaseModel):
     """提示词改写请求"""
     original_request: str
+    target: str = "codex"  # "codex" | "claude_code"
 
 
 class PromptRewriteResponse(BaseModel):

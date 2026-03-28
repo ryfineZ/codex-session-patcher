@@ -1,8 +1,8 @@
 <template>
   <div class="prompt-enhance-panel">
     <n-space vertical size="large">
-      <!-- CTF/渗透模式 -->
-      <n-card title="CTF/渗透模式" size="small">
+      <!-- CTF/渗透模式 — Codex -->
+      <n-card title="CTF/渗透模式 — Codex" size="small">
         <template #header-extra>
           <n-tag :type="ctfStore.status?.installed ? 'success' : 'default'" size="small">
             {{ ctfStore.status?.installed ? '已启用' : '未启用' }}
@@ -40,12 +40,65 @@
         </n-space>
       </n-card>
 
+      <!-- CTF/渗透模式 — Claude Code -->
+      <n-card title="CTF/渗透模式 — Claude Code" size="small">
+        <template #header-extra>
+          <n-tag :type="ctfStore.status?.claude_installed ? 'success' : 'default'" size="small">
+            {{ ctfStore.status?.claude_installed ? '已启用' : '未启用' }}
+          </n-tag>
+        </template>
+
+        <n-space vertical>
+          <n-alert type="info" :bordered="false">
+            <template #header>功能说明</template>
+            创建 CTF 工作空间，通过项目级 CLAUDE.md 注入安全测试上下文。
+          </n-alert>
+
+          <n-alert type="info" :bordered="false">
+            <template #header>激活命令</template>
+            <code>cd ~/.claude-ctf-workspace && claude</code>
+          </n-alert>
+
+          <n-alert type="warning" :bordered="false">
+            需要从 CTF 工作空间目录启动 Claude Code 才能生效
+          </n-alert>
+
+          <n-space>
+            <n-button
+              v-if="!ctfStore.status?.claude_installed"
+              type="primary"
+              :loading="ctfStore.claudeInstallLoading"
+              @click="handleClaudeInstall"
+            >
+              启用
+            </n-button>
+            <n-button
+              v-else
+              type="warning"
+              :loading="ctfStore.claudeInstallLoading"
+              @click="handleClaudeUninstall"
+            >
+              禁用
+            </n-button>
+          </n-space>
+        </n-space>
+      </n-card>
+
       <!-- 提示词改写器 -->
       <n-card title="提示词改写器" size="small">
         <n-space vertical>
           <n-alert type="info" :bordered="false">
             将可能被拒绝的请求改写为更易接受的形式，需要配置 AI API
           </n-alert>
+
+          <!-- 目标选择 -->
+          <n-form-item label="目标平台">
+            <n-segmented
+              v-model:value="ctfStore.rewriteTarget"
+              :options="targetOptions"
+              size="small"
+            />
+          </n-form-item>
 
           <n-form-item label="原始请求">
             <n-input
@@ -103,12 +156,24 @@
 
       <!-- 推荐工作流 -->
       <n-card title="推荐工作流" size="small">
-        <n-steps vertical :current="0">
-          <n-step title="启用 CTF/渗透模式" description="注入安全测试上下文" />
-          <n-step title="新开会话" description="使用 codex -p ctf 启动" />
-          <n-step title="发送请求" description="如果被拒绝，使用提示词改写器" />
-          <n-step title="继续对话" description="如果仍被拒绝，使用会话清理功能" />
-        </n-steps>
+        <n-tabs type="segment" size="small">
+          <n-tab-pane name="codex" tab="Codex">
+            <n-steps vertical :current="0" size="small" style="margin-top: 12px">
+              <n-step title="启用 CTF/渗透模式" description="注入安全测试上下文" />
+              <n-step title="新开会话" description="使用 codex -p ctf 启动" />
+              <n-step title="发送请求" description="如果被拒绝，使用提示词改写器" />
+              <n-step title="继续对话" description="如果仍被拒绝，使用会话清理功能" />
+            </n-steps>
+          </n-tab-pane>
+          <n-tab-pane name="claude" tab="Claude Code">
+            <n-steps vertical :current="0" size="small" style="margin-top: 12px">
+              <n-step title="启用 CTF/渗透模式" description="创建 CTF 工作空间" />
+              <n-step title="进入工作空间" description="cd ~/.claude-ctf-workspace && claude" />
+              <n-step title="发送请求" description="如果被拒绝，使用提示词改写器" />
+              <n-step title="清理会话" description="如果仍被拒绝，使用会话清理功能" />
+            </n-steps>
+          </n-tab-pane>
+        </n-tabs>
       </n-card>
     </n-space>
   </div>
@@ -126,11 +191,16 @@ const ctfStore = useCTFStore()
 const settingsStore = useSettingsStore()
 
 const rewriteInput = ref('')
+const targetOptions = [
+  { label: 'Codex', value: 'codex' },
+  { label: 'Claude Code', value: 'claude_code' },
+]
 
 onMounted(() => {
   ctfStore.fetchStatus()
 })
 
+// Codex
 async function handleInstall() {
   const result = await ctfStore.install()
   if (result.success) {
@@ -143,7 +213,7 @@ async function handleInstall() {
 async function handleUninstall() {
   dialog.warning({
     title: '确认禁用',
-    content: '确定要禁用 CTF/渗透模式吗？',
+    content: '确定要禁用 Codex CTF/渗透模式吗？',
     positiveText: '确认',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -157,6 +227,34 @@ async function handleUninstall() {
   })
 }
 
+// Claude Code
+async function handleClaudeInstall() {
+  const result = await ctfStore.installClaude()
+  if (result.success) {
+    message.success(result.message)
+  } else {
+    message.error(result.message)
+  }
+}
+
+async function handleClaudeUninstall() {
+  dialog.warning({
+    title: '确认禁用',
+    content: '确定要禁用 Claude Code CTF/渗透模式吗？将删除 CTF 工作空间中的 CLAUDE.md。',
+    positiveText: '确认',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      const result = await ctfStore.uninstallClaude()
+      if (result.success) {
+        message.success(result.message)
+      } else {
+        message.error(result.message)
+      }
+    }
+  })
+}
+
+// 提示词改写
 async function handleRewrite() {
   if (!rewriteInput.value.trim()) return
   const result = await ctfStore.rewritePrompt(rewriteInput.value)

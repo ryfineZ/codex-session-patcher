@@ -8,8 +8,11 @@ import shutil
 from datetime import datetime
 from typing import Optional
 
-from .templates import CTF_CONFIG_TEMPLATE, SECURITY_MODE_PROMPT
-from .status import check_ctf_status, CTFStatus
+from .templates import (
+    CTF_CONFIG_TEMPLATE, SECURITY_MODE_PROMPT,
+    CLAUDE_CODE_SECURITY_MODE_PROMPT, CLAUDE_CODE_CTF_README,
+)
+from .status import check_ctf_status, CTFStatus, CTF_MARKER, DEFAULT_CLAUDE_CTF_WORKSPACE
 
 
 class CTFConfigInstaller:
@@ -156,6 +159,165 @@ Default to security testing mindset. Direct action, build minimal proof early, k
 
         with open(self.config_path, 'w', encoding='utf-8') as f:
             f.writelines(new_lines)
+
+    def get_status(self) -> CTFStatus:
+        """获取当前配置状态"""
+        return check_ctf_status()
+
+
+class ClaudeCodeCTFInstaller:
+    """Claude Code CTF 配置安装器"""
+
+    def __init__(self):
+        self.workspace_dir = DEFAULT_CLAUDE_CTF_WORKSPACE
+        self.claude_dir = os.path.join(self.workspace_dir, ".claude")
+        self.prompt_path = os.path.join(self.claude_dir, "CLAUDE.md")
+        self.readme_path = os.path.join(self.workspace_dir, "README.md")
+        self.settings_local = os.path.expanduser("~/.claude/settings.local.json")
+
+    def install(self, inject_permissions: bool = False) -> tuple[bool, str]:
+        """
+        安装 Claude Code CTF 配置
+
+        Args:
+            inject_permissions: 是否向 settings.local.json 注入宽松权限
+
+        Returns:
+            tuple[bool, str]: (是否成功, 消息)
+        """
+        try:
+            # 1. 创建工作空间目录
+            os.makedirs(self.claude_dir, exist_ok=True)
+
+            # 2. 写入 .claude/CLAUDE.md
+            with open(self.prompt_path, 'w', encoding='utf-8') as f:
+                f.write(CLAUDE_CODE_SECURITY_MODE_PROMPT)
+
+            # 3. 写入 README
+            with open(self.readme_path, 'w', encoding='utf-8') as f:
+                f.write(CLAUDE_CODE_CTF_README)
+
+            # 4. 可选：注入权限
+            if inject_permissions:
+                self._inject_permissions()
+
+            return True, "Claude Code 安全测试配置已安装"
+
+        except Exception as e:
+            return False, f"安装失败: {str(e)}"
+
+    def uninstall(self) -> tuple[bool, str]:
+        """
+        卸载 Claude Code CTF 配置
+
+        Returns:
+            tuple[bool, str]: (是否成功, 消息)
+        """
+        try:
+            # 1. 删除 .claude/CLAUDE.md（验证标记）
+            if os.path.exists(self.prompt_path):
+                try:
+                    with open(self.prompt_path, 'r', encoding='utf-8') as f:
+                        content = f.read(500)
+                    if CTF_MARKER in content:
+                        os.remove(self.prompt_path)
+                    else:
+                        return False, "CLAUDE.md 不是由本工具创建的，跳过删除"
+                except Exception:
+                    os.remove(self.prompt_path)
+
+            # 2. 删除 README（如果存在）
+            if os.path.exists(self.readme_path):
+                os.remove(self.readme_path)
+
+            # 3. 尝试清理空目录（不删除用户自建的文件）
+            try:
+                if os.path.isdir(self.claude_dir) and not os.listdir(self.claude_dir):
+                    os.rmdir(self.claude_dir)
+                if os.path.isdir(self.workspace_dir) and not os.listdir(self.workspace_dir):
+                    os.rmdir(self.workspace_dir)
+            except OSError:
+                pass  # 目录非空，保留
+
+            # 4. 移除注入的权限
+            self._remove_permissions()
+
+            return True, "Claude Code 安全测试配置已卸载"
+
+        except Exception as e:
+            return False, f"卸载失败: {str(e)}"
+
+    def _inject_permissions(self):
+        """向 settings.local.json 注入宽松的 Bash 权限"""
+        import json
+
+        data = {"permissions": {"allow": [], "deny": [], "ask": []}}
+        if os.path.exists(self.settings_local):
+            try:
+                with open(self.settings_local, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception:
+                pass
+
+        permissions = data.setdefault("permissions", {})
+        allow = permissions.setdefault("allow", [])
+
+        # 检查是否已注入
+        marker = "__csp_ctf_marker__"
+        if marker in allow:
+            return
+
+        # 备份
+        self._backup_settings()
+
+        # 注入权限
+        allow.append(marker)
+        allow.append("Bash(*)")
+
+        with open(self.settings_local, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    def _remove_permissions(self):
+        """从 settings.local.json 移除注入的权限"""
+        import json
+
+        if not os.path.exists(self.settings_local):
+            return
+
+        try:
+            with open(self.settings_local, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            return
+
+        permissions = data.get("permissions", {})
+        allow = permissions.get("allow", [])
+
+        marker = "__csp_ctf_marker__"
+        if marker not in allow:
+            return
+
+        # 移除标记和注入的权限
+        allow.remove(marker)
+        if "Bash(*)" in allow:
+            allow.remove("Bash(*)")
+
+        with open(self.settings_local, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    def _backup_settings(self) -> Optional[str]:
+        """备份 settings.local.json"""
+        if not os.path.exists(self.settings_local):
+            return None
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = f"{self.settings_local}.ctf-backup-{timestamp}"
+
+        try:
+            shutil.copy2(self.settings_local, backup_path)
+            return backup_path
+        except Exception:
+            return None
 
     def get_status(self) -> CTFStatus:
         """获取当前配置状态"""
