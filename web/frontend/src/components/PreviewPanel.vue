@@ -254,7 +254,8 @@ function changeTagLabel(type) {
 // 已清理会话（有备份）默认显示 Diff 视图
 watch(() => sessionStore.selectedId, () => {
   const s = sessionStore.getSelectedSession()
-  if (s?.has_backup) {
+  // 有新拒绝内容时优先显示修改预览；只有备份且无新拒绝才显示 Diff
+  if (s?.has_backup && !s?.has_refusal) {
     activeTab.value = 'diff'
   } else {
     activeTab.value = 'changes'

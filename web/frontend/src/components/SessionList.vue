@@ -14,6 +14,14 @@
     <!-- 格式 Tab（多格式时显示） -->
     <div v-if="settingsStore.claudeCodeEnabled || settingsStore.opencodeEnabled" class="format-tabs">
       <button
+        class="format-tab"
+        :class="{ active: sessionStore.activeTab === 'codex' }"
+        @click="sessionStore.setActiveTab('codex')"
+      >
+        {{ $t('session.format_codex') }}
+        <span class="tab-count">{{ sessionStore.codexSessions.length }}</span>
+      </button>
+      <button
         v-if="settingsStore.claudeCodeEnabled"
         class="format-tab"
         :class="{ active: sessionStore.activeTab === 'claude_code' }"
@@ -21,14 +29,6 @@
       >
         {{ $t('session.format_claude') }}
         <span class="tab-count">{{ sessionStore.claudeSessions.length }}</span>
-      </button>
-      <button
-        class="format-tab"
-        :class="{ active: sessionStore.activeTab === 'codex' }"
-        @click="sessionStore.setActiveTab('codex')"
-      >
-        {{ $t('session.format_codex') }}
-        <span class="tab-count">{{ sessionStore.codexSessions.length }}</span>
       </button>
       <button
         v-if="settingsStore.opencodeEnabled"
@@ -98,7 +98,14 @@
         <n-spin size="medium" />
       </div>
       <div v-else class="list-content">
-        <n-empty v-if="filteredSessions.length === 0" :description="$t('session.empty')" />
+        <n-empty v-if="filteredSessions.length === 0 && visibleSessions.length === 0" :description="$t('session.empty')" />
+        <!-- 当前过滤模式下无结果，但实际有会话时给出提示 -->
+        <div v-if="filteredSessions.length === 0 && visibleSessions.length > 0" class="filter-hint">
+          <n-text depth="3" style="font-size: 12px">{{ visibleSessions.length }} 条会话被过滤隐藏</n-text>
+          <n-button text size="tiny" type="primary" @click="filterMode = 'all'" style="font-size: 12px">
+            显示全部
+          </n-button>
+        </div>
 
         <!-- 按日期分组显示 -->
         <div v-for="group in groupedSessions" :key="group.label" class="date-group">
@@ -386,13 +393,20 @@ function formatTime(mtime) {
 .format-tabs {
   flex-shrink: 0;
   display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
   border-bottom: 1px solid var(--color-border, #3a3a3a);
 }
 
+.format-tabs::-webkit-scrollbar {
+  display: none;
+}
+
 .format-tab {
-  flex: 1;
-  padding: 8px 12px;
+  flex-shrink: 0;
+  padding: 8px 16px;
   font-size: 13px;
+  white-space: nowrap;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
@@ -431,6 +445,14 @@ function formatTime(mtime) {
 .format-tab.active .tab-count {
   background: rgba(24, 160, 88, 0.25);
   color: #18a058;
+}
+
+.filter-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 20px 12px;
 }
 
 .search-box {

@@ -12,7 +12,8 @@ export const useSessionStore = defineStore('session', () => {
   const aiRewrite = ref(null)
   const aiRewriteLoading = ref(false)
   const lastError = ref(null) // 最近一次错误信息，组件层可监听并展示
-  const activeTab = ref('claude_code') // 'codex' | 'claude_code' | 'opencode'
+  const activeTab = ref('codex') // 'codex' | 'claude_code' | 'opencode'
+  let _tabInitialized = false
 
   // 按格式拆分
   const codexSessions = computed(() => sessions.value.filter(s => s.format === 'codex'))
@@ -33,17 +34,23 @@ export const useSessionStore = defineStore('session', () => {
       const data = await api.getSessions(!checkRefusal, 'auto')
       sessions.value = data.sessions
 
-      // 初始自动选中有数据的 Tab
-      const settingsStore = useSettingsStore()
-      if (settingsStore.claudeCodeEnabled && claudeSessions.value.length > 0) {
-        activeTab.value = 'claude_code'
-      } else if (opencodeSessions.value.length > 0) {
-        activeTab.value = 'opencode'
-      } else {
-        activeTab.value = 'codex'
+      // 仅首次加载时自动选 Tab，刷新时保留当前 Tab
+      if (!_tabInitialized) {
+        _tabInitialized = true
+        // Codex 优先，有数据就停在 Codex
+        if (codexSessions.value.length > 0) {
+          activeTab.value = 'codex'
+        } else {
+          const settingsStore = useSettingsStore()
+          if (settingsStore.claudeCodeEnabled && claudeSessions.value.length > 0) {
+            activeTab.value = 'claude_code'
+          } else if (opencodeSessions.value.length > 0) {
+            activeTab.value = 'opencode'
+          }
+        }
       }
 
-      // 自动选中当前 Tab 的第一条会话
+      // 自动选中当前 Tab 的第一条会话（仅初次无选中时）
       if (!selectedId.value && activeTabSessions.value.length > 0) {
         await selectSession(activeTabSessions.value[0].id)
       }

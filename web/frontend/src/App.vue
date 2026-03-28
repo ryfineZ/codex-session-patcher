@@ -15,9 +15,7 @@
                 <n-icon><MenuOutline /></n-icon>
               </template>
             </n-button>
-            <n-icon size="24" color="var(--color-primary)">
-              <CodeSlash />
-            </n-icon>
+            <img src="/logo.svg" alt="logo" class="app-logo" />
             <span class="title">Codex Session Patcher</span>
           </div>
           <div class="header-right">
@@ -119,7 +117,7 @@
           <!-- 左侧会话列表 -->
           <n-layout-sider
             bordered
-            :width="280"
+            :width="340"
             :collapsed-width="0"
             :collapsed="sidebarCollapsed"
             :native-scrollbar="false"
@@ -164,7 +162,7 @@
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { darkTheme, zhCN, dateZhCN, enUS, dateEnUS, NDialogProvider } from 'naive-ui'
-import { CodeSlash, SettingsOutline, MenuOutline, ListOutline, SparklesOutline, HelpCircleOutline } from '@vicons/ionicons5'
+import { SettingsOutline, MenuOutline, ListOutline, SparklesOutline, HelpCircleOutline } from '@vicons/ionicons5'
 import SessionList from './components/SessionList.vue'
 import PreviewPanel from './components/PreviewPanel.vue'
 import ActionBar from './components/ActionBar.vue'
@@ -304,6 +302,13 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.app-logo {
+  width: 28px;
+  height: 28px;
+  display: block;
+  flex-shrink: 0;
 }
 
 .header-right {
