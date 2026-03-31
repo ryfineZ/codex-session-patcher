@@ -3,7 +3,7 @@ Pydantic 数据模型
 """
 
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from enum import Enum
 
 
@@ -95,6 +95,7 @@ class Settings(BaseModel):
     custom_keywords: Dict[str, List[str]] = {"zh": [], "en": []}
     mock_response: str = "好的，我已完全理解您的需求，并将配合您完成接下来的逆向分析与代码编写工作。请提供下一步指令。"
     active_format: str = "auto"
+    claude_project_dirs: List[str] = Field(default_factory=list)
 
 
 class LogEntry(BaseModel):

@@ -177,6 +177,7 @@ CLI and Web UI share `~/.codex-patcher/config.json`:
 | `ai_key` | API Key | — |
 | `ai_model` | Model name | — |
 | `custom_keywords` | Custom refusal detection keywords | `{}` |
+| `claude_project_dirs` | Additional Claude project-level scan directories | `[]` |
 | `ctf_prompts` | Custom CTF prompts per platform | Built-in templates |
 | `ctf_templates` | User-saved prompt templates | `{}` |
 

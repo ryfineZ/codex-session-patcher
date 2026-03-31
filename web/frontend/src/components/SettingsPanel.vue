@@ -67,6 +67,18 @@
             </template>
           </n-form-item>
 
+          <n-form-item :label="$t('settings.claudeProjectDirs')">
+            <n-input
+              v-model:value="claudeProjectDirsText"
+              type="textarea"
+              :rows="4"
+              :placeholder="$t('settings.claudeProjectDirsPlaceholder')"
+            />
+            <template #feedback>
+              <span class="form-hint">{{ $t('settings.claudeProjectDirsHint') }}</span>
+            </template>
+          </n-form-item>
+
           <n-form-item :label="$t('settings.opencodeEnabled')">
             <n-switch
               :value="settingsStore.opencodeEnabled"
@@ -159,10 +171,12 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useSessionStore } from '../stores/sessionStore'
 
 const { t } = useI18n()
 const message = useMessage()
 const settingsStore = useSettingsStore()
+const sessionStore = useSessionStore()
 
 // 内置关键词
 const builtinZhKeywords = [
@@ -179,6 +193,18 @@ const builtinEnKeywords = [
 // 自定义关键词
 const zhKeywords = computed(() => settingsStore.customKeywords.zh || [])
 const enKeywords = computed(() => settingsStore.customKeywords.en || [])
+const claudeProjectDirsText = computed({
+  get: () => (settingsStore.claudeProjectDirs || []).join('\n'),
+  set: (value) => {
+    settingsStore.claudeProjectDirs = [...new Set(
+      value
+        .split('\n')
+        .map(item => item.trim())
+        .filter(Boolean)
+    )]
+    settingsStore.markChanged()
+  }
+})
 
 function handleKeywordsChange(lang, value) {
   settingsStore.customKeywords[lang] = value
@@ -188,6 +214,7 @@ function handleKeywordsChange(lang, value) {
 async function handleSave() {
   try {
     await settingsStore.saveSettings()
+    await sessionStore.fetchSessions()
     message.success(t('common.success'))
   } catch (error) {
     message.error(t('common.error') + ': ' + error.message)

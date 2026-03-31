@@ -9,6 +9,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const aiModel = ref('')
   const customKeywords = ref({ zh: [], en: [] })
   const mockResponse = ref('好的，我已完全理解您的需求，并将配合您完成接下来的逆向分析与代码编写工作。请提供下一步指令。')
+  const claudeProjectDirs = ref([])
   const showAllSessions = ref(localStorage.getItem('showAllSessions') === 'true')
   const claudeCodeEnabled = ref(localStorage.getItem('claudeCodeEnabled') === 'true')
   const opencodeEnabled = ref(localStorage.getItem('opencodeEnabled') === 'true')
@@ -25,6 +26,7 @@ export const useSettingsStore = defineStore('settings', () => {
       aiModel.value = data.ai_model
       customKeywords.value = data.custom_keywords
       mockResponse.value = data.mock_response
+      claudeProjectDirs.value = data.claude_project_dirs || []
       changed.value = false
     } catch (error) {
       console.error('Failed to load settings:', error)
@@ -42,8 +44,11 @@ export const useSettingsStore = defineStore('settings', () => {
         ai_key: aiKey.value,
         ai_model: aiModel.value,
         custom_keywords: customKeywords.value,
-        mock_response: mockResponse.value
+        mock_response: mockResponse.value,
+        claude_project_dirs: claudeProjectDirs.value
       })
+      api.clearCache('settings')
+      api.clearCache('sessions')
       changed.value = false
       return true
     } catch (error) {
@@ -61,6 +66,7 @@ export const useSettingsStore = defineStore('settings', () => {
     aiModel.value = ''
     customKeywords.value = { zh: [], en: [] }
     mockResponse.value = '好的，我已完全理解您的需求，并将配合您完成接下来的逆向分析与代码编写工作。请提供下一步指令。'
+    claudeProjectDirs.value = []
     changed.value = true
   }
 
@@ -90,6 +96,7 @@ export const useSettingsStore = defineStore('settings', () => {
     aiModel,
     customKeywords,
     mockResponse,
+    claudeProjectDirs,
     showAllSessions,
     claudeCodeEnabled,
     opencodeEnabled,

@@ -19,6 +19,8 @@ from .core import (
     clean_session_jsonl,
     MOCK_RESPONSE,
     OpenCodeDBAdapter,
+    resolve_claude_session_dirs,
+    list_sessions_from_directories,
 )
 from .core.patcher import save_session_jsonl
 from .core.sqlite_adapter import DEFAULT_OPENCODE_DB
@@ -236,7 +238,7 @@ def handle_rewrite(original_request: str):
         print(f'错误: {e}')
 
 
-def resolve_session_format(args) -> SessionFormat:
+def resolve_session_format(args, config=None) -> SessionFormat:
     """根据 CLI 参数解析会话格式"""
     fmt = getattr(args, 'format', 'auto')
 
@@ -265,6 +267,8 @@ def resolve_session_format(args) -> SessionFormat:
         claude_dir = os.path.expanduser("~/.claude/projects/")
         has_codex = os.path.exists(codex_dir)
         has_claude = os.path.exists(claude_dir)
+        if not has_claude and config:
+            has_claude = bool(resolve_claude_session_dirs(config.get('claude_project_dirs', [])))
 
         if has_codex and not has_claude:
             return SessionFormat.CODEX
@@ -362,7 +366,7 @@ def main():
     custom_keywords = config.get('custom_keywords', None)
 
     # 解析会话格式
-    session_format = resolve_session_format(args)
+    session_format = resolve_session_format(args, config=config)
     session_dir = args.session_dir
 
     # OpenCode 使用 SQLite，走单独路径
@@ -370,19 +374,33 @@ def main():
         _cli_process_opencode(args, mock_response, custom_keywords)
         return
 
-    if session_dir is None:
-        session_dir = SessionParser.DEFAULT_DIRS.get(session_format)
+    if session_dir is None and session_format == SessionFormat.CLAUDE_CODE:
+        session_dirs = resolve_claude_session_dirs(config.get('claude_project_dirs', []))
+        format_label = 'Claude Code'
+        print(f'模式: {format_label}')
+        print('目录:')
+        for path in session_dirs:
+            print(f'  - {path}')
+        print()
+        session_parser = SessionParser(session_format=session_format)
+        sessions = list_sessions_from_directories(session_dirs, session_format=session_format)
+    else:
+        if session_dir is None:
+            session_dir = SessionParser.DEFAULT_DIRS.get(session_format)
 
-    format_label = 'Codex' if session_format == SessionFormat.CODEX else 'Claude Code'
-    print(f'模式: {format_label}')
-    print(f'目录: {os.path.expanduser(session_dir)}')
-    print()
+        format_label = 'Codex' if session_format == SessionFormat.CODEX else 'Claude Code'
+        print(f'模式: {format_label}')
+        print(f'目录: {os.path.expanduser(session_dir)}')
+        print()
 
-    session_parser = SessionParser(session_dir, session_format=session_format)
-    sessions = session_parser.list_sessions()
+        session_parser = SessionParser(session_dir, session_format=session_format)
+        sessions = session_parser.list_sessions()
 
     if not sessions:
-        print(f'未找到会话文件: {os.path.expanduser(session_dir)}')
+        if session_dir is not None:
+            print(f'未找到会话文件: {os.path.expanduser(session_dir)}')
+        else:
+            print('未找到会话文件')
         sys.exit(0)
 
     detector = RefusalDetector(custom_keywords)

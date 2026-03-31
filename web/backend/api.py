@@ -34,6 +34,8 @@ from codex_session_patcher.core import (
     get_assistant_messages,
     get_reasoning_items,
     MOCK_RESPONSE,
+    resolve_claude_session_dirs,
+    list_sessions_from_directories,
 )
 from codex_session_patcher.core.patcher import clean_session_jsonl, save_session_jsonl
 from codex_session_patcher.core.sqlite_adapter import OpenCodeDBAdapter, DEFAULT_OPENCODE_DB
@@ -203,6 +205,8 @@ def list_sessions(
     """
     sessions = []
 
+    settings = load_settings()
+
     # 确定需要扫描的目录
     scan_targets = []
     scan_opencode = False
@@ -210,22 +214,33 @@ def list_sessions(
     if session_format is None:
         # auto 模式：扫描所有目录
         if os.path.exists(DEFAULT_SESSION_DIR):
-            scan_targets.append((DEFAULT_SESSION_DIR, SessionFormat.CODEX))
-        if os.path.exists(DEFAULT_CLAUDE_SESSION_DIR):
-            scan_targets.append((DEFAULT_CLAUDE_SESSION_DIR, SessionFormat.CLAUDE_CODE))
+            scan_targets.append(([DEFAULT_SESSION_DIR], SessionFormat.CODEX))
+
+        claude_dirs = resolve_claude_session_dirs(
+            settings.claude_project_dirs,
+            default_dir=DEFAULT_CLAUDE_SESSION_DIR,
+        )
+        if claude_dirs:
+            scan_targets.append((claude_dirs, SessionFormat.CLAUDE_CODE))
+
         if os.path.exists(DEFAULT_OPENCODE_DB):
             scan_opencode = True
     elif session_format == SessionFormat.CODEX:
-        scan_targets.append((DEFAULT_SESSION_DIR, SessionFormat.CODEX))
+        scan_targets.append(([DEFAULT_SESSION_DIR], SessionFormat.CODEX))
     elif session_format == SessionFormat.CLAUDE_CODE:
-        scan_targets.append((DEFAULT_CLAUDE_SESSION_DIR, SessionFormat.CLAUDE_CODE))
+        scan_targets.append((
+            resolve_claude_session_dirs(
+                settings.claude_project_dirs,
+                default_dir=DEFAULT_CLAUDE_SESSION_DIR,
+            ),
+            SessionFormat.CLAUDE_CODE,
+        ))
     elif session_format == SessionFormat.OPENCODE:
         scan_opencode = True
 
     # 扫描 JSONL 格式会话（Codex / Claude Code）
-    for session_dir, fmt in scan_targets:
-        parser = SessionParser(session_dir, session_format=fmt)
-        for info in parser.list_sessions():
+    for session_dirs, fmt in scan_targets:
+        for info in list_sessions_from_directories(session_dirs, session_format=fmt):
             try:
                 if skip_refusal_check:
                     has_refusal = False
@@ -853,6 +868,7 @@ async def get_settings():
 async def update_settings(settings: Settings):
     """更新设置"""
     if save_settings(settings):
+        _invalidate_session_cache()
         return {"success": True, "message": "设置已保存"}
     raise HTTPException(status_code=500, detail="保存设置失败")
 

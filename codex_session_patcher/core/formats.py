@@ -333,3 +333,17 @@ def decode_claude_project_path(encoded: str) -> str:
         return encoded
     # 去掉首个 '-'，然后将 '-' 替换为 '/'
     return '/' + encoded[1:].replace('-', '/')
+
+
+def encode_claude_project_path(path: str) -> str:
+    """将文件系统路径编码为 Claude Code 的项目目录名。
+    例："/Users/foo/bar" → "-Users-foo-bar"
+    """
+    if not path:
+        return ""
+
+    normalized = os.path.realpath(os.path.expanduser(path)).rstrip("/\\")
+    if not normalized:
+        return ""
+
+    return normalized.replace("\\", "-").replace("/", "-")

@@ -259,7 +259,8 @@ const filteredSessions = computed(() => {
     const query = searchQuery.value.toLowerCase()
     list = list.filter(s =>
       s.id.toLowerCase().includes(query) ||
-      s.filename.toLowerCase().includes(query)
+      s.filename.toLowerCase().includes(query) ||
+      (s.project_path || '').toLowerCase().includes(query)
     )
   }
   return list

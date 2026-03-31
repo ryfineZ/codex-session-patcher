@@ -177,6 +177,7 @@ CLI 和 Web UI 共享配置文件 `~/.codex-patcher/config.json`：
 | `ai_key` | API Key | — |
 | `ai_model` | 模型名称 | — |
 | `custom_keywords` | 自定义拒绝检测关键词 | `{}` |
+| `claude_project_dirs` | Claude 项目级扫描目录列表 | `[]` |
 | `ctf_prompts` | 各平台自定义 CTF 提示词 | 内置模板 |
 | `ctf_templates` | 用户保存的提示词模板 | `{}` |
 
