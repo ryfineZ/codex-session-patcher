@@ -61,7 +61,7 @@
                   <n-spin :show="ctfStore.prompts.codex.loading">
                     <div class="template-row">
                       <n-text depth="3" style="font-size: 13px; white-space: nowrap">{{ $t('enhance.selectTemplate') }}：</n-text>
-                      <n-select size="small" :placeholder="ctfStore.templates.codex.length === 0 ? $t('enhance.noTemplates') : $t('enhance.selectTemplate')" :options="templateOptions('codex')" :disabled="ctfStore.templates.codex.length === 0" :render-label="(option) => renderTemplateLabel(option, 'codex')" clearable style="flex: 1" @update:value="(v) => { if (v) applyTemplate('codex', v) }" />
+                      <n-select v-model:value="codexSelectedTemplate" size="small" :placeholder="ctfStore.templates.codex.length === 0 ? $t('enhance.noTemplates') : $t('enhance.selectTemplate')" :options="templateOptions('codex')" :disabled="ctfStore.templates.codex.length === 0" :render-label="(option) => renderTemplateLabel(option, 'codex')" clearable style="flex: 1" @update:value="(v) => { if (v) applyTemplate('codex', v) }" />
                       <n-button size="small" :disabled="ctfStore.templates.codex.length >= MAX_TEMPLATES" @click="openSaveTemplate('codex')">+ {{ $t('enhance.saveAsTemplate') }}</n-button>
                     </div>
                     <n-input v-model:value="codexPromptText" type="textarea" :rows="12" style="font-family: monospace; font-size: 12px" />
@@ -100,7 +100,7 @@
                   <n-spin :show="ctfStore.prompts.claude_code.loading">
                     <div class="template-row">
                       <n-text depth="3" style="font-size: 13px; white-space: nowrap">{{ $t('enhance.selectTemplate') }}：</n-text>
-                      <n-select size="small" :placeholder="ctfStore.templates.claude_code.length === 0 ? $t('enhance.noTemplates') : $t('enhance.selectTemplate')" :options="templateOptions('claude_code')" :disabled="ctfStore.templates.claude_code.length === 0" :render-label="(option) => renderTemplateLabel(option, 'claude_code')" clearable style="flex: 1" @update:value="(v) => { if (v) applyTemplate('claude_code', v) }" />
+                      <n-select v-model:value="claudeSelectedTemplate" size="small" :placeholder="ctfStore.templates.claude_code.length === 0 ? $t('enhance.noTemplates') : $t('enhance.selectTemplate')" :options="templateOptions('claude_code')" :disabled="ctfStore.templates.claude_code.length === 0" :render-label="(option) => renderTemplateLabel(option, 'claude_code')" clearable style="flex: 1" @update:value="(v) => { if (v) applyTemplate('claude_code', v) }" />
                       <n-button size="small" :disabled="ctfStore.templates.claude_code.length >= MAX_TEMPLATES" @click="openSaveTemplate('claude_code')">+ {{ $t('enhance.saveAsTemplate') }}</n-button>
                     </div>
                     <n-input v-model:value="claudePromptText" type="textarea" :rows="12" style="font-family: monospace; font-size: 12px" />
@@ -139,7 +139,7 @@
                   <n-spin :show="ctfStore.prompts.opencode.loading">
                     <div class="template-row">
                       <n-text depth="3" style="font-size: 13px; white-space: nowrap">{{ $t('enhance.selectTemplate') }}：</n-text>
-                      <n-select size="small" :placeholder="ctfStore.templates.opencode.length === 0 ? $t('enhance.noTemplates') : $t('enhance.selectTemplate')" :options="templateOptions('opencode')" :disabled="ctfStore.templates.opencode.length === 0" :render-label="(option) => renderTemplateLabel(option, 'opencode')" clearable style="flex: 1" @update:value="(v) => { if (v) applyTemplate('opencode', v) }" />
+                      <n-select v-model:value="opencodeSelectedTemplate" size="small" :placeholder="ctfStore.templates.opencode.length === 0 ? $t('enhance.noTemplates') : $t('enhance.selectTemplate')" :options="templateOptions('opencode')" :disabled="ctfStore.templates.opencode.length === 0" :render-label="(option) => renderTemplateLabel(option, 'opencode')" clearable style="flex: 1" @update:value="(v) => { if (v) applyTemplate('opencode', v) }" />
                       <n-button size="small" :disabled="ctfStore.templates.opencode.length >= MAX_TEMPLATES" @click="openSaveTemplate('opencode')">+ {{ $t('enhance.saveAsTemplate') }}</n-button>
                     </div>
                     <n-input v-model:value="opencodePromptText" type="textarea" :rows="12" style="font-family: monospace; font-size: 12px" />
@@ -281,9 +281,11 @@ const MAX_TEMPLATES = 5
 
 const rewriteInput = ref('')
 const codexPromptText = ref('')
+const codexSelectedTemplate = ref(null)
 const claudePromptText = ref('')
+const claudeSelectedTemplate = ref(null)
 const opencodePromptText = ref('')
-
+const opencodeSelectedTemplate = ref(null)
 // 保存模板对话框状态
 const saveTemplateModal = ref({ show: false, tool: '', name: '' })
 
@@ -302,9 +304,11 @@ onMounted(() => {
     claudePromptText.value = ctfStore.prompts.claude_code.prompt
     opencodePromptText.value = ctfStore.prompts.opencode.prompt
 
-    // 如果当前提示词是默认值，自动应用 default:true 的内置模板
+    // 如果当前提示词匹配某个内置模板（即用户未自定义），则显示 default:true 的默认模板
     for (const tool of ['codex', 'claude_code', 'opencode']) {
-      if (ctfStore.prompts[tool].is_default) {
+      const currentPrompt = ctfStore.prompts[tool].prompt?.trim()
+      const builtinMatch = ctfStore.templates[tool].some(t => t.prompt?.trim() === currentPrompt)
+      if (builtinMatch || ctfStore.prompts[tool].is_default) {
         const defaultTpl = ctfStore.templates[tool].find(t => t.default === true)
         if (defaultTpl) applyTemplate(tool, defaultTpl.name)
       }
@@ -349,7 +353,10 @@ function renderTemplateLabel(option, tool) {
 
 function applyTemplate(tool, templateName) {
   const tpl = ctfStore.templates[tool].find(t => t.name === templateName)
-  if (tpl) getPromptTextRef(tool).value = tpl.prompt
+  if (tpl) {
+    getPromptTextRef(tool).value = tpl.prompt
+    getSelectedTemplateRef(tool).value = templateName
+  }
 }
 
 function openSaveTemplate(tool) {
@@ -399,6 +406,12 @@ function getPromptTextRef(tool) {
   if (tool === 'codex') return codexPromptText
   if (tool === 'claude_code') return claudePromptText
   return opencodePromptText
+}
+
+function getSelectedTemplateRef(tool) {
+  if (tool === 'codex') return codexSelectedTemplate
+  if (tool === 'claude_code') return claudeSelectedTemplate
+  return opencodeSelectedTemplate
 }
 
 async function handleSavePrompt(tool, text) {
