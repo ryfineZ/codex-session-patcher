@@ -28,7 +28,7 @@ export default {
 
   // 导航
   nav: {
-    sessions: '会话管理',
+    sessions: '会话清理',
     enhance: 'CTF/渗透模式',
     settings: '设置',
     help: '帮助',

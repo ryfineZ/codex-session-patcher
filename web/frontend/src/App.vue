@@ -86,17 +86,17 @@
 
         <!-- Tab 导航 -->
         <n-tabs v-model:value="activeTab" type="line" class="main-tabs" @update:value="handleTabChange">
-          <n-tab name="sessions">
-            <template #icon>
-              <n-icon><ListOutline /></n-icon>
-            </template>
-            {{ $t('nav.sessions') }}
-          </n-tab>
           <n-tab name="enhance">
             <template #icon>
               <n-icon><SparklesOutline /></n-icon>
             </template>
             {{ $t('nav.enhance') }}
+          </n-tab>
+          <n-tab name="sessions">
+            <template #icon>
+              <n-icon><ListOutline /></n-icon>
+            </template>
+            {{ $t('nav.sessions') }}
           </n-tab>
           <n-tab name="settings">
             <template #icon>
@@ -177,7 +177,7 @@ import { useLogStore } from './stores/logStore'
 import { useLocaleStore } from './stores/localeStore'
 
 const { t } = useI18n()
-const activeTab = ref('sessions')
+const activeTab = ref('enhance')
 const sidebarCollapsed = ref(false)
 const isMobile = ref(false)
 const showSponsor = ref(false)
