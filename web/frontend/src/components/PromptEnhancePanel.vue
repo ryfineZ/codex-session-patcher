@@ -18,6 +18,27 @@
             </template>
 
             <n-space vertical size="large" style="padding-top: 4px">
+              <!-- 提示词模板（最上面：先选模板再看启用） -->
+              <div class="mode-section">
+                <div class="mode-header">
+                  <n-text strong>{{ $t('enhance.editPromptShared') }}</n-text>
+                </div>
+                <n-text depth="3" style="font-size: 13px; line-height: 1.6">{{ $t('enhance.ctfTemplateDesc') }}</n-text>
+                <n-spin :show="ctfStore.prompts.codex.loading" style="margin-top: 8px">
+                  <div class="template-row">
+                    <n-select v-model:value="codexSelectedTemplate" size="small" :placeholder="ctfStore.templates.codex.length === 0 ? $t('enhance.noTemplates') : $t('enhance.selectTemplate')" :options="templateOptions('codex')" :disabled="ctfStore.templates.codex.length === 0" :render-label="(option) => renderTemplateLabel(option, 'codex')" clearable style="flex: 1" @update:value="(v) => { if (v) applyTemplate('codex', v) }" />
+                    <n-button size="small" :disabled="ctfStore.templates.codex.length >= MAX_TEMPLATES" @click="openSaveTemplate('codex')">+ {{ $t('enhance.saveAsTemplate') }}</n-button>
+                  </div>
+                  <n-input v-model:value="codexPromptText" type="textarea" :rows="8" style="font-family: monospace; font-size: 12px" />
+                  <n-space style="margin-top: 8px" align="center">
+                    <n-button size="small" :disabled="ctfStore.prompts.codex.is_default" @click="handleResetPrompt('codex')">{{ $t('enhance.restoreDefault') }}</n-button>
+                    <n-button size="small" type="primary" @click="handleSavePrompt('codex', codexPromptText)">{{ $t('common.save') }}</n-button>
+                  </n-space>
+                </n-spin>
+              </div>
+
+              <n-divider style="margin: 4px 0" />
+
               <!-- Profile 模式 -->
               <div class="mode-section">
                 <div class="mode-header">
@@ -53,25 +74,6 @@
                 </div>
                 <n-alert v-if="ctfStore.status?.global_installed" type="warning" :bordered="false" style="margin-top: 8px">{{ $t('enhance.ctfGlobalWarning') }}</n-alert>
               </div>
-
-              <!-- 提示词编辑 -->
-              <n-divider style="margin: 4px 0" />
-              <n-collapse arrow-placement="left">
-                <n-collapse-item :title="$t('enhance.editPromptShared')" name="codex-prompt">
-                  <n-spin :show="ctfStore.prompts.codex.loading">
-                    <div class="template-row">
-                      <n-text depth="3" style="font-size: 13px; white-space: nowrap">{{ $t('enhance.selectTemplate') }}：</n-text>
-                      <n-select v-model:value="codexSelectedTemplate" size="small" :placeholder="ctfStore.templates.codex.length === 0 ? $t('enhance.noTemplates') : $t('enhance.selectTemplate')" :options="templateOptions('codex')" :disabled="ctfStore.templates.codex.length === 0" :render-label="(option) => renderTemplateLabel(option, 'codex')" clearable style="flex: 1" @update:value="(v) => { if (v) applyTemplate('codex', v) }" />
-                      <n-button size="small" :disabled="ctfStore.templates.codex.length >= MAX_TEMPLATES" @click="openSaveTemplate('codex')">+ {{ $t('enhance.saveAsTemplate') }}</n-button>
-                    </div>
-                    <n-input v-model:value="codexPromptText" type="textarea" :rows="12" style="font-family: monospace; font-size: 12px" />
-                    <n-space style="margin-top: 8px" align="center">
-                      <n-button size="small" :disabled="ctfStore.prompts.codex.is_default" @click="handleResetPrompt('codex')">{{ $t('enhance.restoreDefault') }}</n-button>
-                      <n-button size="small" type="primary" @click="handleSavePrompt('codex', codexPromptText)">{{ $t('common.save') }}</n-button>
-                    </n-space>
-                  </n-spin>
-                </n-collapse-item>
-              </n-collapse>
             </n-space>
           </n-tab-pane>
 
