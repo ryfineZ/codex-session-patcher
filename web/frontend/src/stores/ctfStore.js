@@ -55,8 +55,8 @@ export const useCTFStore = defineStore('ctf', {
       this.installLoading = true
       try {
         const response = await api.post('/ctf/install')
-        if (response.success) {
-          await this.fetchStatus()
+        if (response.success && response.status) {
+          this.status = response.status
         }
         return response
       } catch (error) {
@@ -71,8 +71,8 @@ export const useCTFStore = defineStore('ctf', {
       this.installLoading = true
       try {
         const response = await api.post('/ctf/uninstall')
-        if (response.success) {
-          await this.fetchStatus()
+        if (response.success && response.status) {
+          this.status = response.status
         }
         return response
       } catch (error) {
@@ -87,8 +87,8 @@ export const useCTFStore = defineStore('ctf', {
       this.globalInstallLoading = true
       try {
         const response = await api.post('/ctf/global/install')
-        if (response.success) {
-          await this.fetchStatus()
+        if (response.success && response.status) {
+          this.status = response.status
         }
         return response
       } catch (error) {
@@ -103,8 +103,8 @@ export const useCTFStore = defineStore('ctf', {
       this.globalInstallLoading = true
       try {
         const response = await api.post('/ctf/global/uninstall')
-        if (response.success) {
-          await this.fetchStatus()
+        if (response.success && response.status) {
+          this.status = response.status
         }
         return response
       } catch (error) {
@@ -119,8 +119,8 @@ export const useCTFStore = defineStore('ctf', {
       this.claudeInstallLoading = true
       try {
         const response = await api.post('/ctf/claude/install')
-        if (response.success) {
-          await this.fetchStatus()
+        if (response.success && response.status) {
+          this.status = response.status
         }
         return response
       } catch (error) {
@@ -135,8 +135,8 @@ export const useCTFStore = defineStore('ctf', {
       this.claudeInstallLoading = true
       try {
         const response = await api.post('/ctf/claude/uninstall')
-        if (response.success) {
-          await this.fetchStatus()
+        if (response.success && response.status) {
+          this.status = response.status
         }
         return response
       } catch (error) {
@@ -151,8 +151,8 @@ export const useCTFStore = defineStore('ctf', {
       this.opencodeInstallLoading = true
       try {
         const response = await api.post('/ctf/opencode/install')
-        if (response.success) {
-          await this.fetchStatus()
+        if (response.success && response.status) {
+          this.status = response.status
         }
         return response
       } catch (error) {
@@ -167,8 +167,8 @@ export const useCTFStore = defineStore('ctf', {
       this.opencodeInstallLoading = true
       try {
         const response = await api.post('/ctf/opencode/uninstall')
-        if (response.success) {
-          await this.fetchStatus()
+        if (response.success && response.status) {
+          this.status = response.status
         }
         return response
       } catch (error) {
@@ -216,6 +216,12 @@ export const useCTFStore = defineStore('ctf', {
       } catch (error) {
         console.error(`获取 ${tool} 模板失败:`, error)
       }
+    },
+
+    // 获取单个模板的 prompt 内容
+    async fetchTemplatePrompt(tool, templateName) {
+      const response = await api.get(`/ctf/prompt/${tool}/templates/${encodeURIComponent(templateName)}`)
+      return response.prompt || ''
     },
 
     // 保存当前内容为模板

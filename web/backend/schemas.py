@@ -187,6 +187,7 @@ class CTFInstallResponse(BaseModel):
     message: str
     profile_command: str = "codex -p ctf"
     activation_command: str = ""
+    status: Optional[CTFStatusResponse] = None
 
 
 class PromptRewriteRequest(BaseModel):

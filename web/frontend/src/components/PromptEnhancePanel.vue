@@ -317,31 +317,27 @@ const opencodeSelectedTemplate = ref(null)
 // 保存模板对话框状态
 const saveTemplateModal = ref({ show: false, tool: '', name: '' })
 
-onMounted(() => {
-  ctfStore.fetchStatus()
-  setTimeout(async () => {
-    await Promise.all([
-      ctfStore.fetchPrompt('codex'),
-      ctfStore.fetchPrompt('claude_code'),
-      ctfStore.fetchPrompt('opencode'),
-      ctfStore.fetchTemplates('codex'),
-      ctfStore.fetchTemplates('claude_code'),
-      ctfStore.fetchTemplates('opencode'),
-    ])
-    codexPromptText.value = ctfStore.prompts.codex.prompt
-    claudePromptText.value = ctfStore.prompts.claude_code.prompt
-    opencodePromptText.value = ctfStore.prompts.opencode.prompt
+onMounted(async () => {
+  await Promise.all([
+    ctfStore.fetchStatus(),
+    ctfStore.fetchPrompt('codex'),
+    ctfStore.fetchPrompt('claude_code'),
+    ctfStore.fetchPrompt('opencode'),
+    ctfStore.fetchTemplates('codex'),
+    ctfStore.fetchTemplates('claude_code'),
+    ctfStore.fetchTemplates('opencode'),
+  ])
+  codexPromptText.value = ctfStore.prompts.codex.prompt
+  claudePromptText.value = ctfStore.prompts.claude_code.prompt
+  opencodePromptText.value = ctfStore.prompts.opencode.prompt
 
-    // 如果当前提示词匹配某个内置模板（即用户未自定义），则显示 default:true 的默认模板
-    for (const tool of ['codex', 'claude_code', 'opencode']) {
-      const currentPrompt = ctfStore.prompts[tool].prompt?.trim()
-      const builtinMatch = ctfStore.templates[tool].some(t => t.prompt?.trim() === currentPrompt)
-      if (builtinMatch || ctfStore.prompts[tool].is_default) {
-        const defaultTpl = ctfStore.templates[tool].find(t => t.default === true)
-        if (defaultTpl) applyTemplate(tool, defaultTpl.name)
-      }
+  // 用 is_default 判断是否匹配默认模板，选中对应模板名
+  for (const tool of ['codex', 'claude_code', 'opencode']) {
+    if (ctfStore.prompts[tool].is_default) {
+      const defaultTpl = ctfStore.templates[tool].find(t => t.default === true)
+      if (defaultTpl) getSelectedTemplateRef(tool).value = defaultTpl.name
     }
-  }, 500)
+  }
 })
 
 // ─── 模板相关 ──────────────────────────────────────────
@@ -379,11 +375,11 @@ function renderTemplateLabel(option, tool) {
   }, children)
 }
 
-function applyTemplate(tool, templateName) {
-  const tpl = ctfStore.templates[tool].find(t => t.name === templateName)
-  if (tpl) {
-    getPromptTextRef(tool).value = tpl.prompt
-    getSelectedTemplateRef(tool).value = templateName
+async function applyTemplate(tool, templateName) {
+  getSelectedTemplateRef(tool).value = templateName
+  const prompt = await ctfStore.fetchTemplatePrompt(tool, templateName)
+  if (prompt) {
+    getPromptTextRef(tool).value = prompt
   }
 }
 

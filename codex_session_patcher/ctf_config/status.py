@@ -4,6 +4,7 @@ CTF 配置状态检查
 """
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -50,12 +51,10 @@ def check_ctf_status() -> CTFStatus:
     # ── Codex 检查 ──
     codex_dir = os.path.expanduser("~/.codex")
     config_path = os.path.join(codex_dir, "config.toml")
-    prompts_dir = os.path.join(codex_dir, "prompts")
-    prompt_path = os.path.join(prompts_dir, "security_mode.md")
 
     status = CTFStatus(
         config_path=config_path,
-        prompt_path=prompt_path,
+        prompt_path=None,
     )
 
     if os.path.exists(config_path):
@@ -65,12 +64,16 @@ def check_ctf_status() -> CTFStatus:
                 content = f.read()
                 if '[profiles.ctf]' in content:
                     status.profile_available = True
+                    # 从 [profiles.ctf] 提取实际指向的 prompt 文件路径
+                    match = re.search(r'model_instructions_file\s*=\s*"([^"]+)"', content)
+                    if match:
+                        status.prompt_path = os.path.expanduser(match.group(1))
                 if GLOBAL_MARKER in content:
                     status.global_installed = True
         except Exception:
             pass
 
-    if os.path.exists(prompt_path):
+    if status.prompt_path and os.path.exists(status.prompt_path):
         status.prompt_exists = True
 
     status.installed = status.config_exists and status.prompt_exists and status.profile_available

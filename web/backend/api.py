@@ -3,6 +3,7 @@ API 路由 — 支持 Codex CLI 和 Claude Code 双格式
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import json
@@ -650,7 +651,10 @@ def compute_backup_diff(current_path: str, backup_path: str,
 async def get_sessions(skip_check: bool = False, limit: int = 0, format: str = "auto"):
     """获取会话列表"""
     session_format = _resolve_format(format)
-    sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=skip_check)
+    loop = asyncio.get_event_loop()
+    sessions = await loop.run_in_executor(
+        None, _get_cached_sessions, session_format, skip_check
+    )
     limited_sessions = sessions[:limit] if limit > 0 else sessions
     return SessionListResponse(
         sessions=limited_sessions,
@@ -694,7 +698,10 @@ async def search_sessions(query: str, format: str = "auto"):
         return SessionListResponse(sessions=filtered, total=len(filtered), format=format)
 
     # 使用缓存获取会话列表（避免重新扫描）
-    all_sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=True)
+    loop = asyncio.get_event_loop()
+    all_sessions = await loop.run_in_executor(
+        None, _get_cached_sessions, session_format, True
+    )
     matched_sessions = []
 
     for session in all_sessions:
@@ -742,9 +749,12 @@ async def search_sessions(query: str, format: str = "auto"):
     )
 
 
-def _find_session(session_id: str, session_format: Optional[SessionFormat] = None) -> Optional[Session]:
+async def _find_session(session_id: str, session_format: Optional[SessionFormat] = None) -> Optional[Session]:
     """查找会话（优先从缓存获取）"""
-    sessions = _get_cached_sessions(session_format=session_format, skip_refusal_check=True)
+    loop = asyncio.get_event_loop()
+    sessions = await loop.run_in_executor(
+        None, _get_cached_sessions, session_format, True
+    )
     for session in sessions:
         if session.id == session_id:
             return session
@@ -755,7 +765,7 @@ def _find_session(session_id: str, session_format: Optional[SessionFormat] = Non
 async def get_session(session_id: str, check_refusal: bool = True, format: str = "auto"):
     """获取单个会话详情"""
     # 优先从缓存查找，避免全量扫描
-    session = _find_session(session_id)
+    session = await _find_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -771,7 +781,7 @@ async def get_session(session_id: str, check_refusal: bool = True, format: str =
 @router.post("/sessions/{session_id}/preview", response_model=PreviewResponse)
 async def preview_session_api(session_id: str):
     """预览会话修改"""
-    session = _find_session(session_id)
+    session = await _find_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -814,7 +824,7 @@ async def ai_rewrite_session_api(session_id: str):
     if not settings.ai_model:
         return AIRewriteResponse(success=False, error="AI 配置不完整：缺少模型名称")
 
-    session = _find_session(session_id)
+    session = await _find_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -834,7 +844,7 @@ async def ai_rewrite_session_api(session_id: str):
 @router.post("/sessions/{session_id}/patch", response_model=PatchResponse)
 async def patch_session_api(session_id: str, body: PatchRequest = None):
     """执行会话清理"""
-    session = _find_session(session_id)
+    session = await _find_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -889,7 +899,7 @@ async def patch_session_api(session_id: str, body: PatchRequest = None):
 @router.get("/sessions/{session_id}/backups")
 async def list_backups(session_id: str):
     """列出会话的所有备份"""
-    session = _find_session(session_id)
+    session = await _find_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -918,7 +928,7 @@ async def list_backups(session_id: str):
 @router.post("/sessions/{session_id}/restore", response_model=RestoreResponse)
 async def restore_session(session_id: str, backup_filename: str):
     """从备份还原会话"""
-    session = _find_session(session_id)
+    session = await _find_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -974,11 +984,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # ─── CTF 配置 API ────────────────────────────────────────────────────────────
 
-@router.get("/ctf/status", response_model=CTFStatusResponse)
-async def get_ctf_status():
-    """获取 CTF 配置状态（Codex + Claude Code）"""
+async def _build_ctf_status_response() -> CTFStatusResponse:
+    """从磁盘状态构建 CTFStatusResponse"""
     from codex_session_patcher.ctf_config import check_ctf_status
-    status = check_ctf_status()
+    loop = asyncio.get_event_loop()
+    status = await loop.run_in_executor(None, check_ctf_status)
     return CTFStatusResponse(
         installed=status.installed,
         config_exists=status.config_exists,
@@ -1000,6 +1010,12 @@ async def get_ctf_status():
     )
 
 
+@router.get("/ctf/status", response_model=CTFStatusResponse)
+async def get_ctf_status():
+    """获取 CTF 配置状态（Codex + Claude Code）"""
+    return await _build_ctf_status_response()
+
+
 @router.post("/ctf/install", response_model=CTFInstallResponse)
 async def install_ctf_config():
     """安装 CTF 配置"""
@@ -1015,7 +1031,8 @@ async def install_ctf_config():
     return CTFInstallResponse(
         success=success,
         message=message,
-        profile_command="codex -p ctf"
+        profile_command="codex -p ctf",
+        status=await _build_ctf_status_response(),
     )
 
 
@@ -1034,7 +1051,8 @@ async def uninstall_ctf_config():
     return CTFInstallResponse(
         success=success,
         message=message,
-        profile_command=""
+        profile_command="",
+        status=await _build_ctf_status_response(),
     )
 
 
@@ -1053,7 +1071,8 @@ async def install_ctf_global():
     return CTFInstallResponse(
         success=success,
         message=message,
-        profile_command=""
+        profile_command="",
+        status=await _build_ctf_status_response(),
     )
 
 
@@ -1072,7 +1091,8 @@ async def uninstall_ctf_global():
     return CTFInstallResponse(
         success=success,
         message=message,
-        profile_command=""
+        profile_command="",
+        status=await _build_ctf_status_response(),
     )
 
 
@@ -1093,6 +1113,7 @@ async def install_claude_ctf_config():
         message=message,
         profile_command="",
         activation_command="cd ~/.claude-ctf-workspace && claude",
+        status=await _build_ctf_status_response(),
     )
 
 
@@ -1113,6 +1134,7 @@ async def uninstall_claude_ctf_config():
         message=message,
         profile_command="",
         activation_command="",
+        status=await _build_ctf_status_response(),
     )
 
 
@@ -1137,6 +1159,7 @@ async def install_opencode_ctf_config():
         message=message,
         profile_command="",
         activation_command="cd ~/.opencode-ctf-workspace && opencode",
+        status=await _build_ctf_status_response(),
     )
 
 
@@ -1157,6 +1180,7 @@ async def uninstall_opencode_ctf_config():
         message=message,
         profile_command="",
         activation_command="",
+        status=await _build_ctf_status_response(),
     )
 
 
@@ -1184,16 +1208,42 @@ def _save_raw_config(data: dict):
 
 
 _CTF_PROMPT_PATHS = {
-    'codex': os.path.expanduser("~/.codex/prompts/security_mode.md"),
+    'codex': os.path.expanduser("~/.codex/prompts/ctf_optimized.md"),
     'claude_code': os.path.expanduser("~/.claude-ctf-workspace/.claude/CLAUDE.md"),
     'opencode': os.path.expanduser("~/.opencode-ctf-workspace/AGENTS.md"),
 }
 
 
+def _get_ctf_prompt_path(tool: str) -> str | None:
+    """获取工具当前实际生效的 CTF 提示词路径"""
+    if tool != 'codex':
+        return _CTF_PROMPT_PATHS.get(tool)
+
+    from codex_session_patcher.ctf_config import check_ctf_status
+    status = check_ctf_status()
+    return status.prompt_path or _CTF_PROMPT_PATHS['codex']
+
+
+def _get_codex_prompt_path_for_file(filename: str) -> str:
+    """根据内置模板文件名得到 Codex prompt 绝对路径"""
+    return os.path.join(os.path.expanduser("~/.codex/prompts"), os.path.basename(filename))
+
+
+def _sync_codex_profile_prompt_file(filename: str):
+    """同步 [profiles.ctf].model_instructions_file 到指定内置模板文件"""
+    from codex_session_patcher.ctf_config import CTFConfigInstaller
+    CTFConfigInstaller()._update_config(os.path.basename(filename))
+
+
+def _codex_profile_available() -> bool:
+    from codex_session_patcher.ctf_config import check_ctf_status
+    return check_ctf_status().profile_available
+
+
 def _read_ctf_prompt_for_tool(tool: str) -> str | None:
     """读取工具当前实际安装的 CTF 提示词，未安装时从配置中读取自定义内容，都没有则返回 None"""
     # 优先读已安装的实际文件
-    path = _CTF_PROMPT_PATHS.get(tool)
+    path = _get_ctf_prompt_path(tool)
     if path and os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
@@ -1220,9 +1270,9 @@ async def get_ctf_prompt(tool: str):
     if tool not in _CTF_PROMPT_PATHS:
         raise HTTPException(status_code=400, detail=f"不支持的工具: {tool}")
 
-    prompt_path = _CTF_PROMPT_PATHS[tool]
+    prompt_path = _get_ctf_prompt_path(tool)
     default_prompt = _get_default_prompt(tool)
-    is_installed = os.path.exists(prompt_path)
+    is_installed = bool(prompt_path and os.path.exists(prompt_path))
 
     # 已安装：读取实际文件
     if is_installed:
@@ -1258,7 +1308,7 @@ async def save_ctf_prompt(tool: str, body: dict):
     if not prompt:
         raise HTTPException(status_code=400, detail="提示词内容不能为空")
 
-    prompt_path = _CTF_PROMPT_PATHS[tool]
+    prompt_path = _get_ctf_prompt_path(tool)
 
     # 查找匹配的内置模板，获取其目标文件名
     from codex_session_patcher.ctf_config.templates import BUILTIN_TEMPLATES
@@ -1268,9 +1318,17 @@ async def save_ctf_prompt(tool: str, body: dict):
             matched_file = tpl['file']
             break
 
+    should_write_installed = bool(prompt_path and os.path.exists(prompt_path))
+    if tool == 'codex' and _codex_profile_available():
+        if matched_file:
+            prompt_path = _get_codex_prompt_path_for_file(matched_file)
+            _sync_codex_profile_prompt_file(matched_file)
+        should_write_installed = bool(prompt_path)
+
     # 已安装：写入对应文件
-    if os.path.exists(prompt_path):
+    if should_write_installed:
         try:
+            os.makedirs(os.path.dirname(prompt_path), exist_ok=True)
             with open(prompt_path, 'w', encoding='utf-8') as f:
                 f.write(prompt)
         except Exception as e:
@@ -1295,11 +1353,19 @@ async def reset_ctf_prompt(tool: str):
         raise HTTPException(status_code=400, detail=f"不支持的工具: {tool}")
 
     default_prompt = _get_default_prompt(tool)
-    prompt_path = _CTF_PROMPT_PATHS[tool]
+    prompt_path = _get_ctf_prompt_path(tool)
+    should_write_installed = bool(prompt_path and os.path.exists(prompt_path))
+
+    if tool == 'codex' and _codex_profile_available():
+        from codex_session_patcher.ctf_config.installer import CTFConfigInstaller
+        prompt_path = _get_codex_prompt_path_for_file(CTFConfigInstaller.DEFAULT_PROMPT_FILE)
+        _sync_codex_profile_prompt_file(CTFConfigInstaller.DEFAULT_PROMPT_FILE)
+        should_write_installed = True
 
     # 已安装：更新文件为默认
-    if os.path.exists(prompt_path):
+    if should_write_installed:
         try:
+            os.makedirs(os.path.dirname(prompt_path), exist_ok=True)
             with open(prompt_path, 'w', encoding='utf-8') as f:
                 f.write(default_prompt)
         except Exception as e:
@@ -1320,16 +1386,37 @@ MAX_TEMPLATES = 5
 
 @router.get("/ctf/prompt/{tool}/templates")
 async def list_ctf_templates(tool: str):
-    """获取工具的所有提示词模板（内置模板 + 用户模板）"""
+    """获取工具的所有提示词模板（内置模板 + 用户模板），不返回 prompt 内容"""
     if tool not in _CTF_PROMPT_PATHS:
         raise HTTPException(status_code=400, detail=f"不支持的工具: {tool}")
 
     from codex_session_patcher.ctf_config.templates import BUILTIN_TEMPLATES
-    builtin = [dict(t, builtin=True) for t in BUILTIN_TEMPLATES.get(tool, [])]
+    builtin = [{k: v for k, v in t.items() if k != 'prompt'} | {'builtin': True} for t in BUILTIN_TEMPLATES.get(tool, [])]
 
     config = _load_raw_config()
     user_templates = config.get('ctf_templates', {}).get(tool, [])
-    return {"templates": builtin + user_templates}
+    # 用户模板也不返回 prompt 内容
+    user_templates_lite = [{k: v for k, v in t.items() if k != 'prompt'} for t in user_templates]
+    return {"templates": builtin + user_templates_lite}
+
+
+@router.get("/ctf/prompt/{tool}/templates/{template_name}")
+async def get_ctf_template_prompt(tool: str, template_name: str):
+    """获取单个模板的 prompt 内容"""
+    if tool not in _CTF_PROMPT_PATHS:
+        raise HTTPException(status_code=400, detail=f"不支持的工具: {tool}")
+
+    from codex_session_patcher.ctf_config.templates import BUILTIN_TEMPLATES
+    for tpl in BUILTIN_TEMPLATES.get(tool, []):
+        if tpl.get('name') == template_name:
+            return {"name": tpl['name'], "prompt": tpl.get('prompt', '')}
+
+    config = _load_raw_config()
+    for tpl in config.get('ctf_templates', {}).get(tool, []):
+        if tpl.get('name') == template_name:
+            return {"name": tpl['name'], "prompt": tpl.get('prompt', '')}
+
+    raise HTTPException(status_code=404, detail=f"模板不存在: {template_name}")
 
 
 @router.post("/ctf/prompt/{tool}/templates")

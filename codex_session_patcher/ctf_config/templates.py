@@ -36,7 +36,7 @@ model = "auto"
 
 # 安全测试模式
 [profiles.ctf]
-model_instructions_file = "~/.codex/prompts/security_mode.md"
+model_instructions_file = "~/.codex/prompts/ctf_optimized.md"
 '''
 
 
