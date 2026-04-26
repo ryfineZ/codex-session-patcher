@@ -69,13 +69,12 @@
 git clone https://github.com/ryfineZ/codex-session-patcher.git
 cd codex-session-patcher
 
-# CLI 版本（零额外依赖）
-pip install -e .
-
-# Web UI 版本
-pip install -e ".[web]"
-cd web/frontend && npm install && npm run build && cd ../..
+# CLI 版本（自动探测 Python 3.8+）
+./scripts/install.sh
 ```
+
+Web UI 的 `./scripts/start-web.sh` 和 `./scripts/dev-web.sh` 也会自动探测可用的 Python 3.8+ 解释器，优先尝试当前环境里的通用启动命令（如 `python3` / `python`），再回退到版本化命令或 `py -3`，并且只在依赖缺失或源码变更时才执行安装 / 构建。
+如果你确实需要手动安装 editable 包，再使用你机器上已有的 Python 3.8+ 启动命令执行 `-m pip install -e ...`；Windows 常见的是 `py -3`，其他环境可能是 `python3.12`、`python3` 或 `python`。
 
 ---
 
@@ -86,9 +85,6 @@ cd web/frontend && npm install && npm run build && cd ../..
 ```bash
 # 生产模式
 ./scripts/start-web.sh
-
-# 或直接启动
-uvicorn web.backend.main:app --host 127.0.0.1 --port 8080
 ```
 
 访问 `http://localhost:8080`
@@ -97,6 +93,11 @@ uvicorn web.backend.main:app --host 127.0.0.1 --port 8080
 ```bash
 ./scripts/dev-web.sh
 ```
+
+说明：
+- 生产脚本只会在 Python Web 依赖缺失、前端依赖缺失/过期、或前端构建产物过期时才执行对应步骤。
+- 如果前端构建产物已经可直接提供服务，生产脚本不会为了启动而额外要求 `node` / `npm` 或补装前端依赖。
+- 开发脚本同样会跳过重复安装；如果 `3000` 端口已占用，会自动选择下一个可用端口启动前端。
 
 ### CLI
 

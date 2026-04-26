@@ -353,7 +353,7 @@ def main():
             from web.backend.main import run_server
             run_server(host=args.host, port=args.port)
         except ImportError:
-            print('错误: Web 依赖未安装，请运行: pip install -e ".[web]"')
+            print(f'错误: Web 依赖未安装，请运行: {sys.executable} -m pip install -e ".[web]"')
             sys.exit(1)
         return
 

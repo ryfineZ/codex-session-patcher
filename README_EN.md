@@ -69,13 +69,12 @@ AI coding tools (Codex, Claude Code, OpenCode) frequently refuse security-relate
 git clone https://github.com/ryfineZ/codex-session-patcher.git
 cd codex-session-patcher
 
-# CLI only (zero extra dependencies)
-pip install -e .
-
-# With Web UI
-pip install -e ".[web]"
-cd web/frontend && npm install && npm run build && cd ../..
+# CLI install (auto-detects Python 3.8+)
+./scripts/install.sh
 ```
+
+The Web UI launchers `./scripts/start-web.sh` and `./scripts/dev-web.sh` also auto-detect a compatible Python 3.8+ interpreter, first trying generic launchers from the current environment such as `python3` or `python`, then falling back to versioned commands or `py -3`, and only install/build when dependencies or frontend assets are actually out of date.
+If you really need a manual editable install, run `-m pip install -e ...` with whatever Python 3.8+ launcher already exists on your machine; on Windows that is often `py -3`, while other environments may use `python3.12`, `python3`, or `python`.
 
 ---
 
@@ -86,9 +85,6 @@ cd web/frontend && npm install && npm run build && cd ../..
 ```bash
 # Production mode
 ./scripts/start-web.sh
-
-# Or directly
-uvicorn web.backend.main:app --host 127.0.0.1 --port 8080
 ```
 
 Visit `http://localhost:8080`
@@ -97,6 +93,11 @@ Visit `http://localhost:8080`
 ```bash
 ./scripts/dev-web.sh
 ```
+
+Notes:
+- The production script only installs Python deps, installs frontend deps, or rebuilds the frontend when one of those steps is actually needed.
+- If the frontend build output is already ready to serve, the production script does not require `node` or `npm` or reinstall frontend dependencies just to start.
+- The development script also skips repeated installs; if port `3000` is already occupied, it will automatically pick the next available frontend port.
 
 ### CLI
 
