@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -25,31 +26,40 @@ class CTFConfigInstaller:
     """CTF 配置安装器"""
 
     DEFAULT_PROMPT_FILE = "ctf_optimized.md"
+    CUSTOM_PROMPT_FILE = "ctf_custom.md"
+    PATCHER_CONFIG_FILE = os.path.expanduser("~/.codex-patcher/config.json")
 
     def __init__(self):
         self.codex_dir = os.path.expanduser("~/.codex")
         self.config_path = os.path.join(self.codex_dir, "config.toml")
+        self.profile_config_path = os.path.join(self.codex_dir, "ctf.config.toml")
         self.prompts_dir = os.path.join(self.codex_dir, "prompts")
+
+    def _load_patcher_config(self) -> dict:
+        """读取 Web/CLI 共用配置。
+
+        这里不能依赖 Web 后端模块；安装器也会被 CLI 直接调用。
+        """
+        try:
+            if os.path.exists(self.PATCHER_CONFIG_FILE):
+                with open(self.PATCHER_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
 
     def _get_prompt_file(self) -> str:
         """从用户配置获取当前选中的模板文件名，没有则返回默认"""
-        try:
-            from ..config_manager import ConfigManager
-            config = ConfigManager().load_config()
-            return config.get('ctf_prompts', {}).get('codex', {}).get('file') or self.DEFAULT_PROMPT_FILE
-        except Exception:
-            return self.DEFAULT_PROMPT_FILE
+        config = self._load_patcher_config()
+        filename = config.get('ctf_prompts', {}).get('codex', {}).get('file')
+        return os.path.basename(filename) if filename else self.DEFAULT_PROMPT_FILE
 
     def _get_prompt_content(self) -> str:
         """从用户配置获取当前选中的模板内容，没有则使用默认"""
-        try:
-            from ..config_manager import ConfigManager
-            config = ConfigManager().load_config()
-            saved = config.get('ctf_prompts', {}).get('codex', {}).get('prompt')
-            if saved:
-                return saved
-        except Exception:
-            pass
+        config = self._load_patcher_config()
+        saved = config.get('ctf_prompts', {}).get('codex', {}).get('prompt')
+        if saved:
+            return saved
         # 使用默认模板
         from .templates import BUILTIN_TEMPLATES
         for tpl in BUILTIN_TEMPLATES.get('codex', []):
@@ -169,6 +179,23 @@ class CTFConfigInstaller:
         Returns:
             bool: 是否添加了新的 profile（False 表示已存在）
         """
+        filename = prompt_file or self.DEFAULT_PROMPT_FILE
+        target_content = f'model_instructions_file = "~/.codex/prompts/{filename}"\n'
+
+        existed = os.path.exists(self.profile_config_path)
+        existing_content = ""
+        if existed:
+            with open(self.profile_config_path, 'r', encoding='utf-8') as f:
+                existing_content = f.read()
+
+        os.makedirs(self.codex_dir, exist_ok=True)
+        if existing_content != target_content:
+            with open(self.profile_config_path, 'w', encoding='utf-8') as f:
+                f.write(target_content)
+
+        self._remove_legacy_ctf_profile()
+        return not existed
+
         import re
         filename = prompt_file or self.DEFAULT_PROMPT_FILE
         existing_content = ""
@@ -210,6 +237,14 @@ model_instructions_file = "~/.codex/prompts/{filename}"
         return True
 
     def _remove_ctf_profile(self) -> bool:
+        removed = False
+        if os.path.exists(self.profile_config_path):
+            os.remove(self.profile_config_path)
+            removed = True
+
+        return self._remove_legacy_ctf_profile() or removed
+
+    def _remove_legacy_ctf_profile(self) -> bool:
         """从配置文件中移除 CTF profile
 
         Returns:

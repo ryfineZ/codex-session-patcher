@@ -3,17 +3,19 @@
     <div class="left-actions">
       <n-button
         :type="hasRefusalOnly ? 'error' : 'warning'"
-        :disabled="!canPatch"
-        :loading="patching"
+        :disabled="!canPatch || sessionStore.aiRewriteLoading"
+        :loading="patching || sessionStore.aiRewriteLoading"
         @click="handlePatch"
       >
         <template #icon>
           <n-icon><TrashOutline /></n-icon>
         </template>
-        {{ hasRefusalOnly ? $t('action.clean') : hasThinkingOnly ? $t('preview.cleanThinking') : $t('preview.cleanReasoning') }}
+        {{ cleanButtonLabel }}
       </n-button>
 
       <n-button
+        v-if="hasRefusalOnly"
+        secondary
         :disabled="!canAIRewrite"
         :loading="sessionStore.aiRewriteLoading"
         @click="handleAIAnalyze"
@@ -21,7 +23,7 @@
         <template #icon>
           <n-icon><SparklesOutline /></n-icon>
         </template>
-        {{ sessionStore.aiRewrite ? $t('enhance.aiGenerated') : $t('enhance.aiAnalyze') }}
+        {{ sessionStore.aiRewrite ? $t('action.aiRewriteReady') : $t('action.aiRewriteNow') }}
         <n-tag v-if="!settingsStore.aiEnabled" size="small" type="info" style="margin-left: 4px">{{ $t('enhance.ctfNotInstalled') }}</n-tag>
         <n-tag v-else-if="sessionStore.aiRewrite" size="small" type="success" style="margin-left: 4px">✓</n-tag>
       </n-button>
@@ -39,6 +41,12 @@
     </div>
 
     <div class="right-info">
+      <n-tag v-if="sessionStore.aiRewriteLoading" type="info">
+        {{ $t('action.aiRewriteRunning') }}
+      </n-tag>
+      <n-tag v-else-if="sessionStore.autoRewriteNotice" :type="sessionStore.autoRewriteNotice.type">
+        {{ sessionStore.autoRewriteNotice.message }}
+      </n-tag>
       <n-tag v-if="lastResult" :type="lastResult.type">
         {{ lastResult.message }}
       </n-tag>
@@ -80,17 +88,32 @@ const restoring = ref(false)
 const lastResult = ref(null)
 
 const canPatch = computed(() => {
+  const session = sessionStore.getSelectedSession()
   const preview = sessionStore.preview
-  return sessionStore.selectedId && preview && (preview.has_changes || preview.reasoning_count > 0 || preview.thinking_count > 0)
+  return sessionStore.selectedId && preview && (
+    (preview.changes?.length || 0) > 0 ||
+    (session?.refusal_count || 0) > 0 ||
+    preview.reasoning_count > 0 ||
+    preview.thinking_count > 0
+  )
 })
 
 const hasRefusalOnly = computed(() => {
-  return sessionStore.preview?.has_changes === true
+  const session = sessionStore.getSelectedSession()
+  return (sessionStore.preview?.changes?.length || 0) > 0 || (session?.refusal_count || 0) > 0
 })
 
 const hasThinkingOnly = computed(() => {
   const preview = sessionStore.preview
-  return !preview?.has_changes && (preview?.thinking_count || 0) > 0
+  return !hasRefusalOnly.value && ((preview?.thinking_count || 0) > 0 || (preview?.reasoning_count || 0) > 0)
+})
+
+const cleanButtonLabel = computed(() => {
+  if (sessionStore.aiRewriteLoading && hasRefusalOnly.value) return t('action.aiRewriteRunning')
+  if (hasRefusalOnly.value && settingsStore.aiEnabled) {
+    return sessionStore.aiRewrite ? t('action.cleanWithAiRewrite') : t('action.cleanAutoRewriteFallback')
+  }
+  return hasRefusalOnly.value ? t('action.clean') : hasThinkingOnly.value ? t('preview.cleanThinking') : t('preview.cleanReasoning')
 })
 
 // 设置预览面板引用（由父组件调用）
@@ -122,7 +145,7 @@ async function handlePatch() {
   const selectedInfo = selectedLines ? ` (${selectedLines.length}/${changesCount})` : ''
 
   // 根据内容类型显示不同的确认对话框
-  if (!preview?.has_changes && (reasoningCount > 0 || thinkingCount > 0)) {
+  if (!hasRefusalOnly.value && (reasoningCount > 0 || thinkingCount > 0)) {
     // 无拒绝内容，只有推理/thinking 内容
     const details = []
     if (reasoningCount > 0) details.push(`${reasoningCount} ${t('preview.reasoningBlocks')}`)
@@ -140,7 +163,7 @@ async function handlePatch() {
     // 有拒绝内容
     dialog.warning({
       title: t('action.confirmClean'),
-      content: `${t('action.confirmCleanMessage')}${selectedInfo}`,
+      content: `${confirmCleanContent.value}${selectedInfo}`,
       positiveText: t('common.confirm'),
       negativeText: t('common.cancel'),
       onPositiveClick: () => {
@@ -187,9 +210,19 @@ const canRestore = computed(() => {
 
 const canAIRewrite = computed(() => {
   return sessionStore.selectedId
-    && sessionStore.preview?.has_changes
+    && (sessionStore.preview?.changes?.length || 0) > 0
     && settingsStore.aiEnabled
     && !sessionStore.aiRewriteLoading
+})
+
+const confirmCleanContent = computed(() => {
+  if (hasRefusalOnly.value && sessionStore.aiRewrite?.items?.length > 0) {
+    return t('action.confirmCleanWithAiMessage', { count: sessionStore.aiRewrite.items.length })
+  }
+  if (hasRefusalOnly.value && settingsStore.aiEnabled && !sessionStore.aiRewriteLoading) {
+    return t('action.confirmCleanDefaultBecauseAiMissing')
+  }
+  return t('action.confirmCleanMessage')
 })
 
 async function handleRestore() {

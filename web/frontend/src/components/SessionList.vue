@@ -71,7 +71,6 @@
     <!-- 过滤标签 -->
     <div class="filter-tabs">
       <n-button
-        v-if="settingsStore.showAllSessions"
         size="tiny"
         :type="filterMode === 'all' ? 'primary' : 'default'"
         :secondary="filterMode === 'all'"
@@ -85,10 +84,9 @@
         :secondary="filterMode === 'refusal'"
         @click="filterMode = 'refusal'"
       >
-        {{ $t('session.hasRefusal') }} {{ refusalCount }}
+        {{ $t('session.needsClean') }} {{ refusalCount }}
       </n-button>
       <n-button
-        v-if="settingsStore.showAllSessions"
         size="tiny"
         :type="filterMode === 'clean' ? 'success' : 'default'"
         :secondary="filterMode === 'clean'"
@@ -114,44 +112,86 @@
         <n-empty v-if="filteredSessions.length === 0 && visibleSessions.length === 0" :description="$t('session.empty')" />
         <!-- 当前过滤模式下无结果，但实际有会话时给出提示 -->
         <div v-if="filteredSessions.length === 0 && visibleSessions.length > 0" class="filter-hint">
-          <n-text depth="3" style="font-size: 12px">{{ visibleSessions.length }} 条会话被过滤隐藏</n-text>
+          <n-text depth="3" style="font-size: 12px">{{ $t('session.filteredHidden', { count: visibleSessions.length }) }}</n-text>
           <n-button text size="tiny" type="primary" @click="filterMode = 'all'" style="font-size: 12px">
-            显示全部
+            {{ $t('session.showAll') }}
           </n-button>
         </div>
 
-        <!-- 按日期分组显示 -->
-        <div v-for="group in groupedSessions" :key="group.label" class="date-group">
-          <div class="date-label" @click="toggleGroup(group.label)">
-            <n-icon class="group-icon" :class="{ expanded: expandedGroups.has(group.label) }">
+        <!-- Codex 优先按项目/工作区分组；其他工具或搜索模式保持日期视图 -->
+        <div v-for="group in groupedSessions" :key="group.key" class="date-group">
+          <div class="date-label project-label" @click="toggleGroup(group.key)">
+            <n-icon class="group-icon" :class="{ expanded: expandedGroups.has(group.key) }">
               <ChevronDownOutline />
             </n-icon>
-            <span>{{ group.label }}</span>
+            <div class="group-title-wrap">
+              <span>{{ group.label }}</span>
+              <span v-if="group.subtitle" class="group-subtitle" :title="group.subtitle">{{ group.subtitle }}</span>
+            </div>
+            <n-tag v-if="group.needsCleanCount > 0" type="error" size="tiny" :bordered="false">
+              {{ $t('session.needsClean') }} {{ group.needsCleanCount }}
+            </n-tag>
             <span class="count">{{ group.sessions.length }}</span>
           </div>
 
-          <div v-show="expandedGroups.has(group.label)" class="group-sessions">
+          <div v-show="expandedGroups.has(group.key)" class="group-sessions">
             <div
               v-for="session in group.sessions"
               :key="session.id"
               class="session-item"
-              :class="{ selected: session.id === sessionStore.selectedId, 'has-refusal': session.has_refusal }"
+              :class="[
+                sessionStateClass(session),
+                { selected: session.id === sessionStore.selectedId }
+              ]"
             >
               <div class="session-main" @click="selectSession(session.id)">
                 <div class="session-info">
-                  <span class="session-id">{{ session.id }}</span>
-                  <span class="session-time">{{ formatTime(session.mtime) }}</span>
+                  <div class="session-title-line">
+                    <span class="session-title" :title="session.title || session.id">{{ sessionDisplayTitle(session) }}</span>
+                    <n-tag
+                      v-if="session.format === 'codex'"
+                      :type="session.ctf_active ? 'success' : 'default'"
+                      size="tiny"
+                      :bordered="false"
+                    >
+                      {{ session.ctf_active ? $t('session.ctfActive') : $t('session.ctfInactive') }}
+                    </n-tag>
+                    <n-tag
+                      :type="sessionStateType(session)"
+                      size="tiny"
+                      :bordered="false"
+                    >
+                      {{ sessionStateLabel(session) }}
+                    </n-tag>
+                  </div>
+                  <div class="session-subtitle">
+                    <span class="session-time">{{ formatTime(session.mtime) }}</span>
+                    <span class="session-id">#{{ session.id }}</span>
+                  </div>
+                  <div class="session-snippet" :title="session.last_user_message || session.first_user_message || session.last_assistant_message || ''">
+                    {{ sessionSnippet(session) }}
+                  </div>
+                  <div class="session-action-inline" :class="sessionStateClass(session)">
+                    {{ sessionActionShort(session) }}
+                  </div>
                 </div>
                 <div class="session-meta">
+                  <n-button
+                    size="tiny"
+                    quaternary
+                    type="error"
+                    :title="$t('session.deleteSession')"
+                    :loading="deletingId === session.id"
+                    @click.stop="confirmDeleteSession(session)"
+                  >
+                    {{ $t('common.delete') }}
+                  </n-button>
                   <n-tag
                     v-if="session.has_refusal"
                     type="error"
                     size="small"
                   >
-                    {{ session.refusal_count }}
-                  </n-tag>
-                  <n-tag v-else type="success" size="small">
-                    OK
+                    {{ $t('session.refusalCount', { count: session.refusal_count }) }}
                   </n-tag>
                   <n-tag
                     v-if="session.has_backup"
@@ -183,6 +223,24 @@
                   <span class="label">{{ $t('session.modified') }}:</span>
                   <span class="value">{{ session.mtime }}</span>
                 </div>
+                <div v-if="session.format === 'codex'" class="detail-item">
+                  <span class="label">{{ $t('session.ctfStatus') }}:</span>
+                  <span class="value action-value">
+                    {{ session.ctf_active ? $t('session.ctfActiveDetail') : $t('session.ctfInactiveDetail') }}
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="label">{{ $t('session.nextAction') }}:</span>
+                  <span class="value action-value">{{ sessionActionHint(session) }}</span>
+                </div>
+                <div v-if="session.first_user_message" class="detail-item detail-block">
+                  <span class="label">{{ $t('session.firstUserMessage') }}:</span>
+                  <span class="value action-value">{{ session.first_user_message }}</span>
+                </div>
+                <div v-if="session.last_user_message && session.last_user_message !== session.first_user_message" class="detail-item detail-block">
+                  <span class="label">{{ $t('session.lastUserMessage') }}:</span>
+                  <span class="value action-value">{{ session.last_user_message }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -195,13 +253,14 @@
 <script setup>
 import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 import { RefreshOutline, ChevronDownOutline, SearchOutline } from '@vicons/ionicons5'
 import { useSessionStore } from '../stores/sessionStore'
 import { useSettingsStore } from '../stores/settingsStore'
 
 const { t } = useI18n()
 const message = useMessage()
+const dialog = useDialog()
 const sessionStore = useSessionStore()
 const settingsStore = useSettingsStore()
 
@@ -216,8 +275,10 @@ const expandedIds = reactive(new Set())
 const expandedGroups = reactive(new Set([t('session.today'), t('session.yesterday')]))
 
 const searchQuery = ref('')
-const filterMode = ref('refusal')  // 'all' | 'refusal' | 'clean' | 'patched'
+const filterMode = ref('all')  // 'all' | 'refusal' | 'clean' | 'patched'
 const loading = ref(false)
+const deletingId = ref(null)
+let selectingVisibleSession = false
 
 // 防抖定时器
 let searchDebounceTimer = null
@@ -256,13 +317,6 @@ async function handleClearSearch() {
 onUnmounted(() => {
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
-  }
-})
-
-// 关闭"显示全部"时，如果当前在 all/clean 过滤，自动切回 refusal
-watch(() => settingsStore.showAllSessions, (val) => {
-  if (!val && (filterMode.value === 'all' || filterMode.value === 'clean')) {
-    filterMode.value = 'refusal'
   }
 })
 
@@ -314,8 +368,89 @@ const filteredSessions = computed(() => {
   return list
 })
 
-// 按日期分组
+// 保持左侧可见列表与右侧预览一致：
+// 默认过滤是“需要清理”，如果仍预览全部会话里的最新会话，会造成“左侧 A、右侧 B”的误解。
+watch(
+  () => filteredSessions.value.map(s => s.id).join('|'),
+  async () => {
+    if (selectingVisibleSession || loading.value) return
+    const list = filteredSessions.value
+    if (list.length === 0) return
+    const selectedVisible = list.some(s => s.id === sessionStore.selectedId)
+    if (selectedVisible) return
+
+    selectingVisibleSession = true
+    try {
+      await sessionStore.selectSession(list[0].id)
+    } finally {
+      selectingVisibleSession = false
+    }
+  },
+  { immediate: true }
+)
+
+const shouldGroupByCtfAndProject = computed(() =>
+  sessionStore.activeTab === 'codex' && !sessionStore.isSearchMode
+)
+
+function projectNameFromPath(path) {
+  if (!path) return ''
+  const normalized = String(path).replace(/[\\/]+$/, '')
+  const parts = normalized.split(/[\\/]/)
+  return parts[parts.length - 1] || normalized
+}
+
+function projectGroupLabel(session) {
+  return session.project_name || projectNameFromPath(session.project_path) || t('session.unknownProject')
+}
+
+function ensureProjectGroupsExpanded(groups) {
+  if (!shouldGroupByCtfAndProject.value) return
+  for (const group of groups.slice(0, 8)) {
+    expandedGroups.add(group.key)
+  }
+}
+
+// 按项目或日期分组
 const groupedSessions = computed(() => {
+  if (shouldGroupByCtfAndProject.value) {
+    const groups = {}
+    const sortedSessions = [...filteredSessions.value].sort((a, b) => {
+      if (a.has_refusal !== b.has_refusal) return a.has_refusal ? -1 : 1
+      if (a.ctf_active !== b.ctf_active) return a.ctf_active ? -1 : 1
+      return b.mtime.localeCompare(a.mtime)
+    })
+
+    for (const session of sortedSessions) {
+      const ctfBucket = session.ctf_active ? 'ctf-active' : 'ctf-normal'
+      const projectKey = session.project_key || session.project_path || '__unknown__'
+      const key = `${ctfBucket}:${projectKey}`
+      if (!groups[key]) {
+        const ctfLabel = session.ctf_active ? t('session.ctfGroupActive') : t('session.ctfGroupNormal')
+        groups[key] = {
+          key,
+          label: `${ctfLabel} · ${projectGroupLabel(session)}`,
+          subtitle: session.project_path || '',
+          sessions: [],
+          needsCleanCount: 0,
+          ctfActive: session.ctf_active,
+        }
+      }
+      groups[key].sessions.push(session)
+      if (session.has_refusal) groups[key].needsCleanCount += 1
+    }
+
+    const result = Object.values(groups).sort((a, b) => {
+      if (a.needsCleanCount !== b.needsCleanCount) return b.needsCleanCount - a.needsCleanCount
+      if (a.ctfActive !== b.ctfActive) return a.ctfActive ? -1 : 1
+      const at = a.sessions[0]?.mtime || ''
+      const bt = b.sessions[0]?.mtime || ''
+      return bt.localeCompare(at)
+    })
+    ensureProjectGroupsExpanded(result)
+    return result
+  }
+
   const groups = {}
   // 使用本地时间，与 mtime 保持一致
   const now = new Date()
@@ -360,8 +495,11 @@ const groupedSessions = computed(() => {
   return order
     .filter(label => groups[label])
     .map(label => ({
+      key: label,
       label,
-      sessions: groups[label]
+      subtitle: '',
+      sessions: groups[label],
+      needsCleanCount: groups[label].filter(s => s.has_refusal).length,
     }))
 })
 
@@ -394,6 +532,34 @@ async function refresh() {
   }
 }
 
+function confirmDeleteSession(session) {
+  dialog.warning({
+    title: t('session.deleteSession'),
+    content: t('session.deleteSessionConfirm', {
+      title: sessionDisplayTitle(session),
+      id: session.id,
+    }),
+    positiveText: t('session.deleteSessionConfirmButton'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: async () => {
+      deletingId.value = session.id
+      try {
+        const result = await sessionStore.deleteSession(session.id)
+        if (result.success) {
+          message.success(result.message || t('session.deleteSessionSuccess'))
+          expandedIds.delete(session.id)
+        } else {
+          message.error(result.message || t('session.deleteSessionFailed'))
+        }
+      } catch (error) {
+        message.error(error.message || t('session.deleteSessionFailed'))
+      } finally {
+        deletingId.value = null
+      }
+    },
+  })
+}
+
 function truncate(str, len) {
   if (!str) return ''
   return str.length > len ? str.slice(0, len) + '...' : str
@@ -408,6 +574,47 @@ function formatSize(bytes) {
 function formatTime(mtime) {
   const parts = mtime.split(' ')
   return parts.length > 1 ? parts[1].slice(0, 5) : mtime
+}
+
+function sessionDisplayTitle(session) {
+  const title = session.title || session.first_user_message || session.last_user_message || session.id
+  return truncate(title, 42)
+}
+
+function sessionSnippet(session) {
+  const text = session.last_user_message || session.first_user_message || session.last_assistant_message
+  if (!text) return session.project_path ? truncate(session.project_path, 44) : t('session.noConversation')
+  return truncate(text, 58)
+}
+
+function sessionStateType(session) {
+  if (session.has_refusal) return 'error'
+  if (session.has_backup) return 'success'
+  return 'default'
+}
+
+function sessionStateLabel(session) {
+  if (session.has_refusal) return t('session.needsClean')
+  if (session.has_backup) return t('session.cleaned')
+  return t('session.noActionNeeded')
+}
+
+function sessionStateClass(session) {
+  if (session.has_refusal) return 'needs-clean'
+  if (session.has_backup) return 'cleaned'
+  return 'normal'
+}
+
+function sessionActionHint(session) {
+  if (session.has_refusal) return t('session.actionCleanHint')
+  if (session.has_backup) return t('session.actionReviewHint')
+  return t('session.actionNoNeedHint')
+}
+
+function sessionActionShort(session) {
+  if (session.has_refusal) return t('session.actionCleanShort', { count: session.refusal_count || 1 })
+  if (session.has_backup) return t('session.actionReviewShort')
+  return t('session.actionNoNeedShort')
 }
 </script>
 
@@ -589,6 +796,27 @@ function formatTime(mtime) {
   font-size: 11px;
 }
 
+.project-label {
+  gap: 8px;
+}
+
+.group-title-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.group-subtitle {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-4, #666);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .group-sessions {
   overflow: hidden;
 }
@@ -608,37 +836,49 @@ function formatTime(mtime) {
   background: #2d4a3a;
 }
 
-/* 有拒绝内容的会话 - 高亮显示 */
-.session-item.has-refusal {
-  background: rgba(208, 48, 80, 0.1);
-  border-left: 3px solid #d03050;
-}
-
-.session-item.has-refusal:hover {
-  background: rgba(208, 48, 80, 0.15);
-}
-
-.session-item.has-refusal.selected {
-  background: rgba(208, 48, 80, 0.2);
-}
-
 .session-main {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 10px;
 }
 
 .session-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.session-title-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .session-id {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-1, #fff);
+  font-size: 11px;
+  color: var(--color-text-4, #666);
   font-family: monospace;
+}
+
+.session-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-1, #fff);
+}
+
+.session-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .session-time {
@@ -646,10 +886,39 @@ function formatTime(mtime) {
   color: var(--color-text-4, #666);
 }
 
+.session-snippet {
+  margin-top: 2px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-3, #888);
+}
+
+.session-action-inline {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.session-action-inline.needs-clean {
+  color: #ff8a9a;
+}
+
+.session-action-inline.cleaned {
+  color: #63d392;
+}
+
+.session-action-inline.normal {
+  color: var(--color-text-3, #888);
+}
+
 .session-meta {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .expand-icon {
@@ -678,11 +947,41 @@ function formatTime(mtime) {
 
 .detail-item .label {
   color: var(--color-text-3, #888);
-  min-width: 60px;
+  min-width: 74px;
 }
 
 .detail-item .value {
   color: var(--color-text-2, #ccc);
   font-family: monospace;
+}
+
+.detail-item.detail-block {
+  align-items: flex-start;
+}
+
+.detail-item .action-value {
+  font-family: inherit;
+  color: var(--color-text-1, #fff);
+}
+
+.session-item.needs-clean {
+  background: rgba(208, 48, 80, 0.1);
+  border-left: 3px solid #d03050;
+}
+
+.session-item.needs-clean:hover {
+  background: rgba(208, 48, 80, 0.15);
+}
+
+.session-item.needs-clean.selected {
+  background: rgba(208, 48, 80, 0.22);
+}
+
+.session-item.cleaned {
+  border-left: 3px solid #18a058;
+}
+
+.session-item.cleaned.selected {
+  background: rgba(24, 160, 88, 0.18);
 }
 </style>

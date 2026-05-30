@@ -3,8 +3,40 @@ Pydantic 数据模型
 """
 
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from enum import Enum
+
+
+DEFAULT_MOCK_RESPONSE = (
+    "我会按授权的本地/测试服范围继续：先检查项目结构、配置和相关模块，"
+    "确认当前状态后给出下一步可验证的测试计划。"
+)
+REPLACEMENT_CHAR = "\ufffd"
+
+
+def looks_like_question_mark_mojibake(text: str) -> bool:
+    """判断文本是否像 GBK/UTF-8 编码损坏后留下的一串问号。"""
+    if not text:
+        return False
+
+    compact = "".join(ch for ch in text.strip() if not ch.isspace())
+    if len(compact) < 8:
+        return False
+
+    bad_count = compact.count("?") + compact.count("？") + compact.count(REPLACEMENT_CHAR)
+    if bad_count < 6:
+        return False
+
+    bad_ratio = bad_count / max(len(compact), 1)
+    allowed_noise = set("?？" + REPLACEMENT_CHAR + "/\\|:：,，.。!！-—_[]()（）")
+    return bad_ratio >= 0.45 or all(ch in allowed_noise for ch in compact)
+
+
+def normalize_mock_response(value: Optional[str]) -> str:
+    """修复配置里被写坏的默认替换文本。"""
+    if not value or looks_like_question_mark_mojibake(value):
+        return DEFAULT_MOCK_RESPONSE
+    return value
 
 
 class SessionFormatEnum(str, Enum):
@@ -34,6 +66,7 @@ class Session(BaseModel):
     id: str
     filename: str
     path: str
+    title: Optional[str] = None
     date: str
     mtime: str
     size: int
@@ -43,6 +76,15 @@ class Session(BaseModel):
     backup_count: int = 0
     format: SessionFormatEnum = SessionFormatEnum.CODEX
     project_path: Optional[str] = None
+    project_name: Optional[str] = None
+    project_key: Optional[str] = None
+    first_user_message: Optional[str] = None
+    last_user_message: Optional[str] = None
+    last_assistant_message: Optional[str] = None
+    originator: Optional[str] = None
+    ctf_active: bool = False
+    ctf_source: Optional[str] = None
+    ctf_reason: Optional[str] = None
 
 
 class SessionListResponse(BaseModel):
@@ -93,9 +135,14 @@ class Settings(BaseModel):
     ai_key: str = ""
     ai_model: str = ""
     custom_keywords: Dict[str, List[str]] = {"zh": [], "en": []}
-    mock_response: str = "好的，我已完全理解您的需求，并将配合您完成接下来的逆向分析与代码编写工作。请提供下一步指令。"
+    mock_response: str = DEFAULT_MOCK_RESPONSE
     active_format: str = "auto"
     clean_reasoning: bool = True  # 是否清理推理内容（thinking/reasoning blocks）
+
+    @field_validator("mock_response", mode="before")
+    @classmethod
+    def _repair_garbled_mock_response(cls, value: Optional[str]) -> str:
+        return normalize_mock_response(value)
 
 
 class LogEntry(BaseModel):
@@ -133,6 +180,7 @@ class PatchRequest(BaseModel):
     replacements: List[PatchReplacementItem] = []
     selected_lines: Optional[List[int]] = None  # 只清理选中的行号，None 表示全部
     clean_reasoning: Optional[bool] = None  # 是否清理推理内容，None 表示使用设置中的默认值
+    auto_ai_rewrite: bool = True  # 未传 replacements 时，自动调用已配置 AI 生成拒绝替换
 
 
 class BackupInfo(BaseModel):
@@ -167,6 +215,12 @@ class CTFStatusResponse(BaseModel):
     global_installed: bool = False
     config_path: Optional[str] = None
     prompt_path: Optional[str] = None
+    global_prompt_path: Optional[str] = None
+    global_prompt_exists: bool = False
+    codex_profile_ready: bool = False
+    codex_global_active: bool = False
+    codex_mode: str = "off"  # off | profile | profile_broken | global | global_broken
+    codex_activation_command: str = "codex-patcher --install-ctf-config"
     # Claude Code
     claude_installed: bool = False
     claude_workspace_exists: bool = False
@@ -188,6 +242,11 @@ class CTFInstallResponse(BaseModel):
     profile_command: str = "codex -p ctf"
     activation_command: str = ""
     status: Optional[CTFStatusResponse] = None
+
+
+class LaunchCodexRequest(BaseModel):
+    """Request to launch Codex in a real terminal window."""
+    cwd: Optional[str] = None
 
 
 class PromptRewriteRequest(BaseModel):

@@ -26,6 +26,21 @@ from .core.sqlite_adapter import DEFAULT_OPENCODE_DB
 DEFAULT_CONFIG_FILE = os.path.expanduser('~/.codex-patcher/config.json')
 
 
+def _safe_print(*args, **kwargs):
+    """兼容 Windows GBK 控制台，避免 emoji 触发 UnicodeEncodeError。"""
+    text = kwargs.pop('sep', ' ').join(str(arg) for arg in args)
+    end = kwargs.pop('end', '\n')
+    file = kwargs.pop('file', sys.stdout)
+    try:
+        file.write(text + end)
+    except UnicodeEncodeError:
+        encoding = getattr(file, 'encoding', None) or 'utf-8'
+        file.write((text + end).encode(encoding, errors='replace').decode(encoding, errors='replace'))
+
+
+print = _safe_print
+
+
 def load_config():
     """加载 Web 端保存的配置"""
     if os.path.exists(DEFAULT_CONFIG_FILE):
@@ -47,13 +62,30 @@ def handle_ctf_status():
 
     # Codex 状态
     print('\n[Codex CLI]')
-    if status.installed:
-        print('  状态: ✅ 已安装')
+    if status.codex_mode == 'global':
+        print('  当前生效方式: ✅ 全局模式（新 Codex 会话自动启用）')
+        print(f'  配置文件: {status.config_path}')
+        print(f'  Prompt 文件: {status.global_prompt_path}')
+        print('  启动命令: codex')
+        print('  提醒: 用完请运行 codex-patcher --uninstall-ctf-global 或在 Web UI 禁用全局模式')
+    elif status.codex_mode == 'global_broken':
+        print('  当前生效方式: ⚠️ 全局模式配置不完整（不会可靠生效）')
+        print(f'  配置文件: {status.config_path}')
+        print(f'  Prompt 文件: {status.global_prompt_path or "未配置"}')
+        print('  修复命令: codex-patcher --install-ctf-global')
+    elif status.codex_mode == 'profile':
+        print('  当前生效方式: ✅ Profile 模式（只有用 codex -p ctf 启动才启用）')
         print(f'  配置文件: {status.config_path}')
         print(f'  Prompt 文件: {status.prompt_path}')
-        print('  激活命令: codex -p ctf')
+        print('  启动命令: codex -p ctf')
+        print('  判断当前会话: 如果不是通过 codex -p ctf 启动，这个会话就没有启用 CTF/渗透模式。')
+    elif status.codex_mode == 'profile_broken':
+        print('  当前生效方式: ⚠️ Profile 配置不完整（不会可靠生效）')
+        print(f'  配置文件: {status.config_path}')
+        print(f'  Prompt 文件: {status.prompt_path or "未配置"}')
+        print('  修复命令: codex-patcher --install-ctf-config')
     else:
-        print('  状态: ❌ 未安装')
+        print('  当前生效方式: ❌ 未启用')
         print('  安装命令: codex-patcher --install-ctf-config')
 
     # Claude Code 状态
@@ -111,6 +143,38 @@ def handle_ctf_uninstall():
     if success:
         print(f'✅ {message}')
         print('已恢复到默认配置')
+    else:
+        print(f'❌ {message}')
+
+
+def handle_ctf_global_install():
+    """安装 Codex CTF 全局配置"""
+    from .ctf_config import CTFConfigInstaller
+    installer = CTFConfigInstaller()
+
+    print('正在启用 Codex 安全测试全局模式...')
+    success, message = installer.install_global()
+
+    if success:
+        print(f'✅ {message}')
+        print()
+        print('使用命令: codex')
+        print('注意: 需要新开 Codex 会话才能生效，所有新 Codex 会话都会启用。')
+    else:
+        print(f'❌ {message}')
+
+
+def handle_ctf_global_uninstall():
+    """卸载 Codex CTF 全局配置"""
+    from .ctf_config import CTFConfigInstaller
+    installer = CTFConfigInstaller()
+
+    print('正在禁用 Codex 安全测试全局模式...')
+    success, message = installer.uninstall_global()
+
+    if success:
+        print(f'✅ {message}')
+        print('新的 Codex 会话将不再自动启用 CTF/渗透模式。')
     else:
         print(f'❌ {message}')
 
@@ -300,7 +364,9 @@ def main():
     # CTF 配置参数 — Codex
     parser.add_argument('--install-ctf-config', action='store_true', help='安装 Codex 安全测试配置')
     parser.add_argument('--uninstall-ctf-config', action='store_true', help='卸载 Codex 安全测试配置')
-    parser.add_argument('--ctf-status', action='store_true', help='查看安全测试配置状态（Codex + Claude Code）')
+    parser.add_argument('--install-ctf-global', action='store_true', help='启用 Codex 安全测试全局模式')
+    parser.add_argument('--uninstall-ctf-global', action='store_true', help='禁用 Codex 安全测试全局模式')
+    parser.add_argument('--ctf-status', action='store_true', help='查看安全测试配置状态（Codex + Claude Code + OpenCode）')
     # CTF 配置参数 — Claude Code
     parser.add_argument('--install-claude-ctf', action='store_true', help='安装 Claude Code 安全测试配置')
     parser.add_argument('--uninstall-claude-ctf', action='store_true', help='卸载 Claude Code 安全测试配置')
@@ -324,6 +390,14 @@ def main():
 
     if args.uninstall_ctf_config:
         handle_ctf_uninstall()
+        return
+
+    if args.install_ctf_global:
+        handle_ctf_global_install()
+        return
+
+    if args.uninstall_ctf_global:
+        handle_ctf_global_uninstall()
         return
 
     if args.install_claude_ctf:
