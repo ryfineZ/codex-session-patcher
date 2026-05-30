@@ -3,6 +3,7 @@ FastAPI 主入口
 """
 
 import os
+import sys
 import mimetypes
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -16,14 +17,23 @@ mimetypes.add_type("text/css", ".css")
 from .api import router
 
 
+def _safe_print(message: str):
+    """兼容 Windows GBK 控制台，避免 emoji 触发 UnicodeEncodeError。"""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        print(message.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期"""
     # 启动时
-    print("🚀 Codex Session Patcher Web UI 启动中...")
+    _safe_print("🚀 Codex Session Patcher Web UI 启动中...")
     yield
     # 关闭时
-    print("👋 Codex Session Patcher Web UI 已关闭")
+    _safe_print("👋 Codex Session Patcher Web UI 已关闭")
 
 
 app = FastAPI(
@@ -54,7 +64,7 @@ if os.path.exists(frontend_dist):
 def run_server(host: str = "127.0.0.1", port: int = 47832):
     """启动服务器"""
     import uvicorn
-    print(f"📍 访问地址: http://{host}:{port}")
+    _safe_print(f"📍 访问地址: http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
 
 

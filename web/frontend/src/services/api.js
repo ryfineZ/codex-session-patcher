@@ -152,6 +152,13 @@ export async function restoreSession(id, backupFilename) {
   return request(`/sessions/${id}/restore?backup_filename=${encodeURIComponent(backupFilename)}`, { method: 'POST' })
 }
 
+// 删除/移除会话
+export async function deleteSession(id) {
+  clearCache('sessions')
+  clearCache('search')
+  return request(`/sessions/${id}`, { method: 'DELETE' })
+}
+
 // 获取设置
 export async function getSettings() {
   return request('/settings')

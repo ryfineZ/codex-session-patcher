@@ -9,6 +9,35 @@
     </div>
 
     <div v-else class="preview-container">
+      <div class="session-action-summary" :class="summaryClass">
+        <div class="summary-content">
+          <div class="summary-main">
+            <n-tag :type="summaryTagType" size="small" :bordered="false">
+              {{ summaryTitle }}
+            </n-tag>
+            <span>{{ summaryText }}</span>
+          </div>
+          <div class="summary-session-context">
+            <strong>{{ session.project_name || projectNameFromPath(session.project_path) || $t('session.unknownProject') }}</strong>
+            <span v-if="session.title">· {{ session.title }}</span>
+            <span class="summary-session-id">#{{ session.id }}</span>
+          </div>
+        </div>
+        <div class="summary-tags">
+          <n-tag
+            v-if="session.format === 'codex'"
+            :type="session.ctf_active ? 'success' : 'default'"
+            size="small"
+            :bordered="false"
+          >
+            {{ session.ctf_active ? $t('session.ctfActive') : $t('session.ctfInactive') }}
+          </n-tag>
+          <n-tag v-if="session.has_refusal" type="error" size="small" :bordered="false">
+            {{ $t('session.refusalCount', { count: session.refusal_count || cleanableRefusalCount }) }}
+          </n-tag>
+        </div>
+      </div>
+
       <!-- Tab 切换 -->
       <div class="preview-tabs">
         <div
@@ -34,6 +63,12 @@
 
       <!-- 修改预览 Tab -->
       <div v-show="activeTab === 'changes'" class="preview-scrollbar">
+        <div v-if="sessionStore.aiRewriteLoading || sessionStore.autoRewriteNotice" class="auto-rewrite-banner" :class="sessionStore.autoRewriteNotice?.type || 'info'">
+          <n-icon><SparklesOutline /></n-icon>
+          <span>
+            {{ sessionStore.aiRewriteLoading ? $t('action.aiRewriteRunning') : sessionStore.autoRewriteNotice.message }}
+          </span>
+        </div>
         <!-- 无拒绝内容时显示对话摘要 -->
         <div v-if="!preview.changes || preview.changes.length === 0" class="no-refusal-content">
           <!-- 状态提示 -->
@@ -266,7 +301,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CheckmarkCircleOutline, ArrowDownOutline, SwapHorizontalOutline, CodeOutline, InformationCircleOutline } from '@vicons/ionicons5'
+import { CheckmarkCircleOutline, ArrowDownOutline, SwapHorizontalOutline, CodeOutline, InformationCircleOutline, SparklesOutline } from '@vicons/ionicons5'
 import { useSessionStore } from '../stores/sessionStore'
 
 const { t } = useI18n()
@@ -289,6 +324,54 @@ const selectedLines = ref(new Set())
 
 const session = computed(() => sessionStore.getSelectedSession())
 const preview = computed(() => sessionStore.preview)
+
+const refusalChangeCount = computed(() => preview.value?.changes?.length || 0)
+const hasRefusalChanges = computed(() =>
+  refusalChangeCount.value > 0 || (session.value?.has_refusal && (session.value?.refusal_count || 0) > 0)
+)
+
+const hasCleanableThinking = computed(() => {
+  const p = preview.value
+  return (p?.reasoning_count || 0) > 0 || (p?.thinking_count || 0) > 0
+})
+
+const summaryTagType = computed(() => {
+  if (hasRefusalChanges.value) return 'error'
+  if (hasCleanableThinking.value) return 'warning'
+  if (session.value?.has_backup) return 'success'
+  return 'success'
+})
+
+const summaryClass = computed(() => {
+  if (hasRefusalChanges.value) return 'needs-clean-summary'
+  if (hasCleanableThinking.value) return 'thinking-summary'
+  return 'ok-summary'
+})
+
+const summaryTitle = computed(() => {
+  if (hasRefusalChanges.value) return t('session.needsClean')
+  if (hasCleanableThinking.value) return t('preview.cleanReasoning')
+  if (session.value?.has_backup) return t('session.cleaned')
+  return t('session.noActionNeeded')
+})
+
+const summaryText = computed(() => {
+  if (hasRefusalChanges.value) {
+    return t('preview.actionCleanNow', { count: cleanableRefusalCount.value })
+  }
+  if (hasCleanableThinking.value) {
+    const count = (preview.value?.reasoning_count || 0) + (preview.value?.thinking_count || 0)
+    return t('preview.actionCleanThinkingNow', { count })
+  }
+  if (session.value?.has_backup) return t('preview.actionReviewDiff')
+  return t('preview.actionNoNeed')
+})
+
+const cleanableRefusalCount = computed(() => {
+  const previewCount = refusalChangeCount.value
+  const sessionCount = session.value?.refusal_count || 0
+  return Math.max(previewCount, sessionCount)
+})
 
 // 监听预览数据变化，初始化选中状态（默认全选）
 watch(() => sessionStore.preview, (newPreview) => {
@@ -334,8 +417,8 @@ function getSelectedLines() {
 // 暴露方法给父组件
 defineExpose({
   getSelectedLines,
-  hasChanges: () => preview.value?.has_changes,
-  changesCount: () => preview.value?.changes?.length || 0,
+  hasChanges: () => hasRefusalChanges.value,
+  changesCount: () => refusalChangeCount.value,
   selectedCount: () => selectedLines.value.size
 })
 
@@ -349,6 +432,13 @@ function changeTagLabel(type) {
   if (type === 'replace') return t('preview.replace')
   if (type === 'remove_thinking') return t('preview.removeThinking')
   return t('preview.delete')
+}
+
+function projectNameFromPath(path) {
+  if (!path) return ''
+  const normalized = String(path).replace(/[\\/]+$/, '')
+  const parts = normalized.split(/[\\/]/)
+  return parts[parts.length - 1] || normalized
 }
 
 // 已清理会话（有备份）默认显示 Diff 视图
@@ -397,6 +487,66 @@ watch(() => sessionStore.selectedId, () => {
   flex-shrink: 0;
 }
 
+.session-action-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border, #3a3a3a);
+  font-size: 13px;
+}
+
+.summary-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.summary-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.summary-session-context {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-3, #888);
+  font-size: 12px;
+}
+
+.summary-session-id {
+  margin-left: 6px;
+  color: var(--color-text-4, #666);
+  font-family: monospace;
+}
+
+.summary-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.session-action-summary.needs-clean-summary {
+  background: rgba(208, 48, 80, 0.12);
+}
+
+.session-action-summary.thinking-summary {
+  background: rgba(240, 160, 32, 0.12);
+}
+
+.session-action-summary.ok-summary {
+  background: rgba(24, 160, 88, 0.1);
+}
+
 .tab-item {
   display: flex;
   align-items: center;
@@ -423,6 +573,29 @@ watch(() => sessionStore.selectedId, () => {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+.auto-rewrite-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin: 12px 16px 0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--color-text-2, #ccc);
+}
+
+.auto-rewrite-banner.info {
+  background: rgba(32, 128, 240, 0.14);
+}
+
+.auto-rewrite-banner.success {
+  background: rgba(24, 160, 88, 0.14);
+}
+
+.auto-rewrite-banner.warning {
+  background: rgba(240, 160, 32, 0.16);
 }
 
 .empty-content {

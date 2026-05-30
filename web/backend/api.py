@@ -4,11 +4,14 @@ API 路由 — 支持 Codex CLI 和 Claude Code 双格式
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import json
 import re
 import shutil
+import subprocess
+import sys
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
@@ -21,8 +24,8 @@ from .schemas import (
     Session, SessionListResponse, SessionFormatEnum, PreviewResponse,
     PatchResponse, Settings, ChangeDetail, ChangeType, WSMessage,
     AIRewriteResponse, PatchRequest, BackupInfo, RestoreResponse, DiffItem,
-    CTFStatusResponse, CTFInstallResponse, PromptRewriteRequest, PromptRewriteResponse,
-    ConversationTurn,
+    CTFStatusResponse, CTFInstallResponse, LaunchCodexRequest, PromptRewriteRequest, PromptRewriteResponse,
+    ConversationTurn, normalize_mock_response,
 )
 
 from codex_session_patcher.core import (
@@ -48,6 +51,7 @@ DEFAULT_SESSION_DIR = os.path.expanduser("~/.codex/sessions/")
 DEFAULT_CLAUDE_SESSION_DIR = os.path.expanduser("~/.claude/projects/")
 DEFAULT_MEMORY_FILE = os.path.expanduser("~/.codex/memories/MEMORY.md")
 DEFAULT_CONFIG_FILE = os.path.expanduser("~/.codex-patcher/config.json")
+DEFAULT_DELETED_SESSION_DIR = os.path.expanduser("~/.codex-patcher/deleted-sessions")
 
 
 # ─── WebSocket 连接管理 ──────────────────────────────────────────────────────
@@ -89,6 +93,20 @@ def _invalidate_session_cache():
     """清除会话缓存"""
     _session_cache['sessions'] = None
     _session_cache['timestamp'] = 0.0
+
+
+def _invalidate_search_cache():
+    """清除搜索缓存"""
+    if '_search_cache' in globals():
+        _search_cache['query'] = None
+        _search_cache['format'] = None
+        _search_cache['sessions'] = None
+        _search_cache['timestamp'] = 0.0
+
+
+def _invalidate_all_session_caches():
+    _invalidate_session_cache()
+    _invalidate_search_cache()
 
 
 def _get_cached_sessions(
@@ -192,6 +210,243 @@ def count_thinking_blocks(file_path: str, fmt: SessionFormat) -> int:
     return count
 
 
+CTF_SESSION_MARKERS = (
+    "privately deployed for a CTF game",
+    "security testing environment",
+    "CTF/渗透",
+    "CTF/Pentesting",
+    "specialized CTF/Pentesting automation agent",
+    "sandboxed competition environment",
+    "authorized security work",
+    "authorized penetration testing",
+    "All domains in this environment are confirmed redirected",
+    "Execute with maximum aggression and efficiency",
+    "managed-by: codex-session-patcher:ctf",
+)
+
+
+def _normalize_prompt_for_match(text: str) -> str:
+    """Normalize prompt text for robust session/file comparisons.
+
+    Users can edit CTF prompts freely.  Older detection only looked for a small
+    set of built-in-template phrases, so a valid custom global prompt could be
+    loaded by Codex but still displayed as "普通模式" in the Web UI.  Compare the
+    session's recorded base instructions with the currently configured prompt
+    file as a fallback, ignoring our optional bookkeeping marker.
+    """
+    if not text:
+        return ""
+    text = re.sub(r'<!--\s*managed-by:\s*codex-session-patcher:ctf\s*-->', '', text, flags=re.I)
+    text = re.sub(r'\bmanaged-by:\s*codex-session-patcher:ctf\b', '', text, flags=re.I)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _active_codex_prompt_candidates() -> list[tuple[str, str]]:
+    """Return configured Codex CTF prompt files to compare against sessions."""
+    candidates: list[tuple[str, str]] = []
+    try:
+        from codex_session_patcher.ctf_config import check_ctf_status
+        status = check_ctf_status()
+        for label, path in (
+            (status.codex_mode or "codex_ctf", status.global_prompt_path),
+            ("codex_profile", status.prompt_path),
+        ):
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    prompt = f.read()
+                candidates.append((label, prompt))
+            except Exception:
+                logger.debug("读取 Codex CTF prompt 失败: %s", path, exc_info=True)
+    except Exception:
+        logger.debug("读取 Codex CTF 状态失败", exc_info=True)
+    return candidates
+
+
+def detect_ctf_session(file_path: str, fmt: SessionFormat = SessionFormat.CODEX) -> tuple[bool, Optional[str], Optional[str]]:
+    """判断一个历史会话是否实际加载了 CTF/渗透提示词。
+
+    Codex 会在 session_meta.payload.base_instructions.text 中保存会话启动时实际
+    加载的基础/模型指令，因此这里检查会话本身，而不是只看当前配置文件。
+    """
+    if fmt != SessionFormat.CODEX:
+        return False, None, None
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    data = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+
+                if data.get('type') != 'session_meta':
+                    continue
+
+                payload = data.get('payload', {}) or {}
+                base_instructions = payload.get('base_instructions') or {}
+                text = base_instructions.get('text', '') if isinstance(base_instructions, dict) else ''
+                if not text:
+                    return False, None, None
+
+                lowered = text.lower()
+                for marker in CTF_SESSION_MARKERS:
+                    if marker.lower() in lowered:
+                        return True, "codex_profile_or_global", marker
+
+                session_prompt = _normalize_prompt_for_match(text)
+                if len(session_prompt) >= 128:
+                    for label, prompt in _active_codex_prompt_candidates():
+                        active_prompt = _normalize_prompt_for_match(prompt)
+                        if len(active_prompt) < 128:
+                            continue
+                        if (
+                            session_prompt == active_prompt
+                            or active_prompt in session_prompt
+                            or session_prompt in active_prompt
+                        ):
+                            return True, label, "matches_active_prompt"
+
+                return False, None, None
+    except Exception:
+        logger.warning("检测会话 CTF 状态失败: %s", file_path, exc_info=True)
+
+    return False, None, None
+
+
+def _truncate_summary(text: str, limit: int = 120) -> str:
+    """压缩会话摘要，避免列表里只看到编号。"""
+    if not text:
+        return ''
+    text = re.sub(r'\s+', ' ', str(text)).strip()
+    # 环境上下文、开发者指令对用户识别会话帮助不大，跳过。
+    skipped_prefixes = (
+        '<environment_context>',
+        '<permissions instructions>',
+        '<app-context>',
+        'The following is the Codex agent history',
+        'Another language model started to solve this problem',
+    )
+    if text.startswith(skipped_prefixes):
+        return ''
+    return text[:limit] + ('...' if len(text) > limit else '')
+
+
+def _extract_message_text_from_line(line: dict, fmt: SessionFormat) -> tuple[Optional[str], str]:
+    """从一行会话数据里提取 (role, text)，用于列表摘要。"""
+    if fmt == SessionFormat.CODEX:
+        line_type = line.get('type')
+        payload = line.get('payload', {}) or {}
+        if line_type == 'response_item' and payload.get('type') == 'message':
+            role = payload.get('role')
+            texts = []
+            content = payload.get('content', [])
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get('type') in ('input_text', 'output_text', 'text'):
+                        texts.append(item.get('text', ''))
+            return role, _truncate_summary('\n'.join(texts))
+        if line_type == 'event_msg':
+            pt = payload.get('type')
+            if pt == 'user_message':
+                return 'user', _truncate_summary(payload.get('message', ''))
+            if pt == 'agent_message':
+                return 'assistant', _truncate_summary(payload.get('message', ''))
+            if pt == 'task_complete':
+                return 'assistant', _truncate_summary(payload.get('last_agent_message', ''))
+        return None, ''
+
+    if fmt in (SessionFormat.CLAUDE_CODE, SessionFormat.OPENCODE):
+        role = None
+        if line.get('type') in ('human', 'user'):
+            role = 'user'
+        elif line.get('type') == 'assistant':
+            role = 'assistant'
+        else:
+            role = line.get('message', {}).get('role')
+        msg = line.get('message', {})
+        content = msg.get('content', line.get('content', ''))
+        texts = []
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get('type') in ('text', 'input_text', 'output_text'):
+                    texts.append(item.get('text', ''))
+        return role, _truncate_summary('\n'.join(texts))
+
+    return None, ''
+
+
+def inspect_session_metadata(file_path: str, fmt: SessionFormat = SessionFormat.CODEX) -> dict:
+    """提取项目路径、会话标题和首/末轮摘要，用于和 Codex 项目会话对齐显示。"""
+    meta = {
+        'title': None,
+        'project_path': None,
+        'project_name': None,
+        'project_key': None,
+        'first_user_message': None,
+        'last_user_message': None,
+        'last_assistant_message': None,
+        'originator': None,
+    }
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for raw_line in f:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    data = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+
+                payload = data.get('payload', {}) or {}
+                if fmt == SessionFormat.CODEX:
+                    if data.get('type') == 'session_meta':
+                        cwd = payload.get('cwd')
+                        if cwd:
+                            meta['project_path'] = cwd
+                        meta['originator'] = payload.get('originator') or payload.get('source') or meta['originator']
+                    elif data.get('type') == 'turn_context':
+                        cwd = payload.get('cwd')
+                        if cwd and not meta['project_path']:
+                            meta['project_path'] = cwd
+
+                role, text = _extract_message_text_from_line(data, fmt)
+                if text:
+                    if role == 'user':
+                        if not meta['first_user_message']:
+                            meta['first_user_message'] = text
+                        meta['last_user_message'] = text
+                    elif role == 'assistant':
+                        meta['last_assistant_message'] = text
+    except Exception:
+        logger.warning("提取会话摘要失败: %s", file_path, exc_info=True)
+
+    project_path = meta.get('project_path')
+    if project_path:
+        normalized = os.path.normpath(project_path)
+        meta['project_path'] = normalized
+        meta['project_name'] = os.path.basename(normalized.rstrip(os.sep)) or normalized
+        meta['project_key'] = normalized.lower()
+    else:
+        meta['project_name'] = '未识别项目'
+        meta['project_key'] = '__unknown__'
+
+    title = meta.get('first_user_message') or meta.get('last_user_message') or meta.get('last_assistant_message')
+    meta['title'] = title or os.path.basename(file_path)
+    return meta
+
+
 def list_sessions(
     session_format: Optional[SessionFormat] = None,
     skip_refusal_check: bool = False,
@@ -233,6 +488,9 @@ def list_sessions(
                     refusal_count = 0
                 else:
                     has_refusal, refusal_count = check_session_refusal(info.path, info.format)
+                ctf_active, ctf_source, ctf_reason = detect_ctf_session(info.path, info.format)
+                meta = inspect_session_metadata(info.path, info.format)
+                project_path = meta.get('project_path') or info.project_path
 
                 # 检查备份文件
                 backup_count = 0
@@ -245,6 +503,7 @@ def list_sessions(
                     id=info.session_id,
                     filename=info.filename,
                     path=info.path,
+                    title=meta.get('title'),
                     date=info.date,
                     mtime=info.mtime_str,
                     size=info.size,
@@ -253,7 +512,16 @@ def list_sessions(
                     has_backup=backup_count > 0,
                     backup_count=backup_count,
                     format=_to_schema_format(info.format),
-                    project_path=info.project_path,
+                    project_path=project_path,
+                    project_name=meta.get('project_name') or (os.path.basename(project_path) if project_path else None),
+                    project_key=meta.get('project_key') or (os.path.normpath(project_path).lower() if project_path else None),
+                    first_user_message=meta.get('first_user_message'),
+                    last_user_message=meta.get('last_user_message'),
+                    last_assistant_message=meta.get('last_assistant_message'),
+                    originator=meta.get('originator'),
+                    ctf_active=ctf_active,
+                    ctf_source=ctf_source,
+                    ctf_reason=ctf_reason,
                 ))
             except Exception:
                 logger.warning("处理会话 %s 失败", info.path, exc_info=True)
@@ -279,11 +547,29 @@ def list_sessions(
                             if content and detector.detect(content):
                                 refusal_count += 1
                         has_refusal = refusal_count > 0
+                    else:
+                        messages = adapter.load_session_messages(oc_info['session_id'])
+                    first_user = ''
+                    last_user = ''
+                    last_assistant = ''
+                    for msg in messages:
+                        role, text = _extract_message_text_from_line(msg, SessionFormat.OPENCODE)
+                        if text:
+                            if role == 'user':
+                                if not first_user:
+                                    first_user = text
+                                last_user = text
+                            elif role == 'assistant':
+                                last_assistant = text
+
+                    project_path = oc_info.get('project_path', '')
+                    project_name = oc_info.get('project_name') or (os.path.basename(os.path.normpath(project_path)) if project_path else 'OpenCode')
 
                     sessions.append(Session(
                         id=oc_info['session_id'],
                         filename=oc_info['session_id'],
                         path=DEFAULT_OPENCODE_DB,
+                        title=oc_info.get('title') or first_user or last_user or oc_info['session_id'],
                         date=oc_info['date'],
                         mtime=oc_info['mtime_str'],
                         size=0,
@@ -292,7 +578,13 @@ def list_sessions(
                         has_backup=backup_count > 0,
                         backup_count=backup_count,
                         format=SessionFormatEnum.OPENCODE,
-                        project_path=oc_info.get('project_path', ''),
+                        project_path=project_path,
+                        project_name=project_name,
+                        project_key=os.path.normpath(project_path).lower() if project_path else '__opencode__',
+                        first_user_message=first_user or None,
+                        last_user_message=last_user or None,
+                        last_assistant_message=last_assistant or None,
+                        ctf_active=False,
                     ))
                 except Exception:
                     logger.warning("处理 OpenCode 会话 %s 失败", oc_info.get('session_id', ''), exc_info=True)
@@ -311,6 +603,102 @@ def _session_core_format(session: Session) -> SessionFormat:
     elif session.format == SessionFormatEnum.OPENCODE:
         return SessionFormat.OPENCODE
     return SessionFormat.CODEX
+
+
+def _has_ai_rewrite_config(settings: Settings) -> bool:
+    """判断自动改写所需 AI 配置是否完整。"""
+    return bool(settings.ai_enabled and settings.ai_endpoint and settings.ai_model)
+
+
+def _is_relative_to(child: str | Path, parent: str | Path) -> bool:
+    """兼容 Py3.9+ 的安全路径包含检查。"""
+    try:
+        Path(child).resolve().relative_to(Path(parent).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _session_allowed_root(session: Session, core_fmt: SessionFormat) -> str | None:
+    if core_fmt == SessionFormat.CODEX:
+        return DEFAULT_SESSION_DIR
+    if core_fmt == SessionFormat.CLAUDE_CODE:
+        return DEFAULT_CLAUDE_SESSION_DIR
+    if core_fmt == SessionFormat.OPENCODE:
+        return os.path.dirname(DEFAULT_OPENCODE_DB)
+    return None
+
+
+def _delete_jsonl_session_files(session: Session, core_fmt: SessionFormat) -> tuple[list[str], list[str]]:
+    """将 JSONL 会话及同名前缀备份移动到隔离目录，返回 (moved, skipped)。"""
+    root = _session_allowed_root(session, core_fmt)
+    if not root:
+        raise ValueError("不支持的会话格式")
+
+    session_path = Path(session.path).resolve()
+    root_path = Path(root).resolve()
+    if not _is_relative_to(session_path, root_path):
+        raise ValueError(f"会话路径不在允许目录内: {session.path}")
+    if not session_path.exists():
+        raise FileNotFoundError("会话文件不存在，刷新列表即可移除")
+
+    trash_root = Path(DEFAULT_DELETED_SESSION_DIR).resolve()
+    trash_dir = trash_root / datetime.now().strftime("%Y%m%d_%H%M%S") / session.id
+    trash_dir.mkdir(parents=True, exist_ok=True)
+
+    session_dir = session_path.parent
+    base_name = session_path.name
+    candidates = [session_path]
+    for item in session_dir.iterdir():
+        if item.name.startswith(base_name + ".") and item.name.endswith(".bak") and item.is_file():
+            candidates.append(item.resolve())
+
+    moved: list[str] = []
+    skipped: list[str] = []
+    for candidate in candidates:
+        if not _is_relative_to(candidate, root_path):
+            skipped.append(str(candidate))
+            continue
+        dest = trash_dir / candidate.name
+        suffix = 1
+        while dest.exists():
+            dest = trash_dir / f"{candidate.name}.{suffix}"
+            suffix += 1
+        shutil.move(str(candidate), str(dest))
+        moved.append(str(candidate))
+
+    return moved, skipped
+
+
+def _delete_opencode_session(session_id: str) -> int:
+    """删除 OpenCode SQLite 中的一条会话及相关消息/parts，返回删除记录数量。"""
+    adapter = OpenCodeDBAdapter(DEFAULT_OPENCODE_DB)
+    backup_path = adapter.backup_database()
+    conn = adapter._connect(readonly=False)
+    deleted = 0
+    try:
+        message_ids = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM message WHERE session_id = ?", (session_id,))
+        ]
+        for msg_id in message_ids:
+            deleted += conn.execute("DELETE FROM part WHERE message_id = ?", (msg_id,)).rowcount
+        deleted += conn.execute("DELETE FROM message WHERE session_id = ?", (session_id,)).rowcount
+        for table in ("part", "session"):
+            try:
+                deleted += conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,)).rowcount
+            except Exception:
+                # 不同版本 schema 可能没有 session_id 或已在上面删除，忽略兼容。
+                pass
+        deleted += conn.execute("DELETE FROM session WHERE id = ?", (session_id,)).rowcount
+        conn.commit()
+        logger.info("OpenCode 会话已删除: %s, backup=%s", session_id, backup_path)
+        return deleted
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ─── 预览 & 清理 ─────────────────────────────────────────────────────────────
@@ -364,6 +752,11 @@ def preview_session(file_path: str, mock_response: str = MOCK_RESPONSE,
             # 冗余副本：挂到最近的 primary 下
             if primary_order:
                 refusal_groups[primary_order[-1]].append(idx)
+            else:
+                # 有些历史 Codex 会话只保留 event_msg/agent_message，
+                # 没有对应 response_item；此时它本身就是需要清理的主记录。
+                refusal_groups[idx] = []
+                primary_order.append(idx)
         else:
             refusal_groups[idx] = []
             primary_order.append(idx)
@@ -567,7 +960,13 @@ def load_settings() -> Settings:
         try:
             with open(DEFAULT_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return Settings.model_validate(data)
+                settings = Settings.model_validate(data)
+                if data.get("mock_response") != settings.mock_response:
+                    data["mock_response"] = settings.mock_response
+                    with open(DEFAULT_CONFIG_FILE, 'w', encoding='utf-8') as out:
+                        json.dump(data, out, ensure_ascii=False, indent=2)
+                    os.chmod(DEFAULT_CONFIG_FILE, 0o600)
+                return settings
         except Exception:
             logger.warning("加载配置文件失败: %s", DEFAULT_CONFIG_FILE, exc_info=True)
     return Settings()
@@ -750,10 +1149,17 @@ async def search_sessions(query: str, format: str = "auto"):
 
 
 async def _find_session(session_id: str, session_format: Optional[SessionFormat] = None) -> Optional[Session]:
-    """查找会话（优先从缓存获取）"""
+    """查找会话（优先返回已做过拒绝检测的缓存结果）"""
     loop = asyncio.get_event_loop()
+
+    if session_format is None:
+        cached = _session_cache.get('sessions') or []
+        for session in cached:
+            if session.id == session_id:
+                return session
+
     sessions = await loop.run_in_executor(
-        None, _get_cached_sessions, session_format, True
+        None, _get_cached_sessions, session_format, False
     )
     for session in sessions:
         if session.id == session_id:
@@ -850,13 +1256,14 @@ async def patch_session_api(session_id: str, body: PatchRequest = None):
 
     settings = load_settings()
     mock_response = settings.mock_response
+    core_fmt = _session_core_format(session)
 
     replacements_map = {}
     if body and body.replacements:
         for item in body.replacements:
-            replacements_map[item.line_num] = item.replacement_text
+            replacements_map[item.line_num] = normalize_mock_response(item.replacement_text)
     elif body and body.replacement_text:
-        mock_response = body.replacement_text
+        mock_response = normalize_mock_response(body.replacement_text)
 
     # 获取选中的行号
     selected_lines = body.selected_lines if body else None
@@ -869,7 +1276,54 @@ async def patch_session_api(session_id: str, body: PatchRequest = None):
         data={"level": "info", "message": f"开始处理会话: {session_id}"}
     ))
 
-    core_fmt = _session_core_format(session)
+    should_auto_ai_rewrite = (
+        (body is None or body.auto_ai_rewrite)
+        and not replacements_map
+        and not (body and body.replacement_text)
+        and session.has_refusal
+        and _has_ai_rewrite_config(settings)
+    )
+    if should_auto_ai_rewrite:
+        await manager.broadcast(WSMessage(
+            type="log",
+            data={"level": "info", "message": "检测到未提供替换内容，正在自动调用 AI 生成拒绝替换..."}
+        ))
+        try:
+            from .ai_service import generate_ai_rewrite
+            ai_result = await generate_ai_rewrite(
+                session.path,
+                settings,
+                settings.custom_keywords,
+                session_format=core_fmt,
+                session_id=session_id if core_fmt == SessionFormat.OPENCODE else None,
+            )
+            if ai_result.success and ai_result.items:
+                selected_set = set(selected_lines) if selected_lines else None
+                for item in ai_result.items:
+                    if selected_set is not None and item.line_num not in selected_set:
+                        continue
+                    replacements_map[item.line_num] = item.replacement
+                await manager.broadcast(WSMessage(
+                    type="log",
+                    data={"level": "success", "message": f"AI 已自动生成 {len(replacements_map)} 条替换内容"}
+                ))
+            elif ai_result.error:
+                await manager.broadcast(WSMessage(
+                    type="log",
+                    data={"level": "warn", "message": f"AI 自动改写失败，将使用默认替换文本: {ai_result.error}"}
+                ))
+        except Exception as e:
+            logger.warning("自动 AI 改写失败，回退到默认替换文本", exc_info=True)
+            await manager.broadcast(WSMessage(
+                type="log",
+                data={"level": "warn", "message": f"AI 自动改写失败，将使用默认替换文本: {e}"}
+            ))
+    elif not replacements_map and session.has_refusal and not _has_ai_rewrite_config(settings):
+        await manager.broadcast(WSMessage(
+            type="log",
+            data={"level": "warn", "message": "AI 接口未配置完整，本次清理使用默认替换文本"}
+        ))
+
     result = patch_session(
         session.path,
         mock_response,
@@ -882,7 +1336,7 @@ async def patch_session_api(session_id: str, body: PatchRequest = None):
     )
 
     if result.success:
-        _invalidate_session_cache()
+        _invalidate_all_session_caches()
         await manager.broadcast(WSMessage(
             type="log",
             data={"level": "success", "message": result.message}
@@ -925,6 +1379,46 @@ async def list_backups(session_id: str):
     return backups
 
 
+@router.delete("/sessions/{session_id}", response_model=RestoreResponse)
+async def delete_session(session_id: str):
+    """删除/移除本地会话记录。
+
+    Codex/Claude Code: 移动 JSONL 会话和同名前缀 .bak 到 ~/.codex-patcher/deleted-sessions。
+    OpenCode: 先备份数据库，再删除该 session 的 SQLite 记录。
+    """
+    session = await _find_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已删除，请刷新列表")
+
+    core_fmt = _session_core_format(session)
+    try:
+        if core_fmt == SessionFormat.OPENCODE:
+            deleted_count = _delete_opencode_session(session_id)
+            message = f"会话已删除（OpenCode 数据库记录 {deleted_count} 条，已自动备份数据库）"
+        else:
+            moved, skipped = _delete_jsonl_session_files(session, core_fmt)
+            message = f"会话已移除（{len(moved)} 个文件已移到隔离目录）"
+            if skipped:
+                message += f"，跳过 {len(skipped)} 个不安全路径"
+
+        _invalidate_all_session_caches()
+        await manager.broadcast(WSMessage(
+            type="log",
+            data={"level": "success", "message": f"{session_id}: {message}"}
+        ))
+        return RestoreResponse(success=True, message=message)
+    except FileNotFoundError as e:
+        _invalidate_all_session_caches()
+        return RestoreResponse(success=True, message=str(e))
+    except Exception as e:
+        logger.warning("删除会话失败: %s", session_id, exc_info=True)
+        await manager.broadcast(WSMessage(
+            type="log",
+            data={"level": "error", "message": f"删除会话失败: {e}"}
+        ))
+        return RestoreResponse(success=False, message=f"删除失败: {str(e)}")
+
+
 @router.post("/sessions/{session_id}/restore", response_model=RestoreResponse)
 async def restore_session(session_id: str, backup_filename: str):
     """从备份还原会话"""
@@ -943,7 +1437,7 @@ async def restore_session(session_id: str, backup_filename: str):
 
     try:
         shutil.copy2(backup_path, session.path)
-        _invalidate_session_cache()
+        _invalidate_all_session_caches()
         await manager.broadcast(WSMessage(
             type="log",
             data={"level": "success", "message": f"会话 {session_id} 已从备份还原"}
@@ -997,6 +1491,12 @@ async def _build_ctf_status_response() -> CTFStatusResponse:
         global_installed=status.global_installed,
         config_path=status.config_path,
         prompt_path=status.prompt_path,
+        global_prompt_path=status.global_prompt_path,
+        global_prompt_exists=status.global_prompt_exists,
+        codex_profile_ready=status.codex_profile_ready,
+        codex_global_active=status.codex_global_active,
+        codex_mode=status.codex_mode,
+        codex_activation_command=status.codex_activation_command,
         claude_installed=status.claude_installed,
         claude_workspace_exists=status.claude_workspace_exists,
         claude_prompt_exists=status.claude_prompt_exists,
@@ -1014,6 +1514,94 @@ async def _build_ctf_status_response() -> CTFStatusResponse:
 async def get_ctf_status():
     """获取 CTF 配置状态（Codex + Claude Code）"""
     return await _build_ctf_status_response()
+
+
+def _quote_powershell_single(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def shlex_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _resolve_launch_cwd(cwd: Optional[str]) -> str:
+    launch_cwd = os.path.abspath(os.path.expandvars(os.path.expanduser(cwd or os.getcwd())))
+    if not os.path.isdir(launch_cwd):
+        raise HTTPException(status_code=400, detail=f"启动目录不存在: {launch_cwd}")
+    return launch_cwd
+
+
+def _launch_interactive_terminal(command: str, cwd: str) -> str:
+    """Launch an interactive command in a real terminal window."""
+    if os.name == "nt":
+        ps_command = f"Set-Location -LiteralPath {_quote_powershell_single(cwd)}; {command}"
+        wt = shutil.which("wt.exe") or shutil.which("wt")
+        if wt:
+            subprocess.Popen(
+                [wt, "-d", cwd, "powershell.exe", "-NoExit", "-Command", ps_command],
+                close_fds=True,
+            )
+            return "Windows Terminal"
+
+        subprocess.Popen(
+            ["powershell.exe", "-NoExit", "-Command", ps_command],
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            close_fds=True,
+        )
+        return "PowerShell"
+
+    if sys.platform == "darwin":
+        escaped_cwd = cwd.replace("\\", "\\\\").replace('"', '\\"')
+        script = (
+            'tell application "Terminal"\n'
+            f'  do script "cd \\"{escaped_cwd}\\" && {command}"\n'
+            "  activate\n"
+            "end tell"
+        )
+        subprocess.Popen(["osascript", "-e", script], close_fds=True)
+        return "Terminal.app"
+
+    for terminal in ("x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal"):
+        terminal_path = shutil.which(terminal)
+        if not terminal_path:
+            continue
+        shell_command = f"cd {shlex_quote(cwd)} && {command}; exec bash"
+        if terminal == "gnome-terminal":
+            args = [terminal_path, "--working-directory", cwd, "--", "bash", "-lc", f"{command}; exec bash"]
+        elif terminal == "konsole":
+            args = [terminal_path, "--workdir", cwd, "-e", "bash", "-lc", f"{command}; exec bash"]
+        elif terminal == "xfce4-terminal":
+            args = [terminal_path, "--working-directory", cwd, "-e", f"bash -lc {shlex_quote(command + '; exec bash')}"]
+        else:
+            args = [terminal_path, "-e", f"bash -lc {shlex_quote(shell_command)}"]
+        subprocess.Popen(args, close_fds=True)
+        return terminal
+
+    raise RuntimeError("未找到可用的终端程序，请在系统终端里手动运行该命令")
+
+
+@router.post("/ctf/codex/launch")
+async def launch_codex_ctf(request: LaunchCodexRequest):
+    from codex_session_patcher.ctf_config import check_ctf_status
+
+    status = check_ctf_status()
+    if status.codex_global_active:
+        command = "codex"
+    elif status.codex_profile_ready:
+        command = "codex -p ctf"
+    else:
+        raise HTTPException(status_code=400, detail="请先启用 Codex Profile 或全局模式")
+
+    cwd = _resolve_launch_cwd(request.cwd)
+    try:
+        terminal = _launch_interactive_terminal(command, cwd)
+    except Exception as e:
+        logger.warning("启动 Codex 终端失败", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    message = f"已在 {terminal} 中启动: {command}"
+    await manager.broadcast(WSMessage(type="log", data={"level": "success", "message": message}))
+    return {"success": True, "message": message, "command": command, "cwd": cwd, "terminal": terminal}
 
 
 @router.post("/ctf/install", response_model=CTFInstallResponse)
@@ -1214,6 +1802,127 @@ _CTF_PROMPT_PATHS = {
 }
 
 
+def _prompt_hash(prompt: str) -> str:
+    return hashlib.sha256((prompt or '').strip().encode('utf-8')).hexdigest()
+
+
+def _all_templates(tool: str) -> list[dict]:
+    from codex_session_patcher.ctf_config.templates import BUILTIN_TEMPLATES
+    builtin = [dict(t, builtin=True) for t in BUILTIN_TEMPLATES.get(tool, [])]
+    config = _load_raw_config()
+    user_templates = [dict(t, builtin=False) for t in config.get('ctf_templates', {}).get(tool, [])]
+    return builtin + user_templates
+
+
+def _find_template(tool: str, template_name: str) -> dict | None:
+    for tpl in _all_templates(tool):
+        if tpl.get('name') == template_name:
+            return tpl
+    return None
+
+
+def _detect_current_template(tool: str, prompt: str | None = None) -> str | None:
+    if prompt is None:
+        try:
+            prompt = _read_ctf_prompt_for_tool(tool)
+        except Exception:
+            prompt = None
+    if not prompt:
+        return None
+    target_hash = _prompt_hash(prompt)
+    for tpl in _all_templates(tool):
+        if _prompt_hash(tpl.get('prompt', '')) == target_hash:
+            return tpl.get('name')
+    return None
+
+
+def _write_prompt_file(path: str, prompt: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(prompt)
+
+
+def _template_response(tool: str, templates: list[dict] | None = None) -> dict:
+    if templates is None:
+        templates = _all_templates(tool)
+    current_prompt = None
+    try:
+        current_prompt = _read_ctf_prompt_for_tool(tool)
+    except Exception:
+        pass
+    current_template = _detect_current_template(tool, current_prompt)
+    lite = []
+    for tpl in templates:
+        item = {k: v for k, v in tpl.items() if k != 'prompt'}
+        item['active'] = bool(current_template and item.get('name') == current_template)
+        lite.append(item)
+    return {"templates": lite, "current_template": current_template}
+
+
+def _save_selected_prompt(tool: str, template_name: str, prompt: str, file_name: str | None = None):
+    config = _load_raw_config()
+    ctf_prompts = config.setdefault('ctf_prompts', {})
+    tool_config = ctf_prompts.setdefault(tool, {})
+    tool_config['prompt'] = prompt
+    tool_config['template'] = template_name
+    if file_name:
+        tool_config['file'] = file_name
+    elif tool == 'codex':
+        tool_config['file'] = 'ctf_custom.md'
+    _save_raw_config(config)
+
+
+def _apply_template_to_installed_target(tool: str, template_name: str, prompt: str, file_name: str | None = None) -> list[str]:
+    """把模板写入当前已启用的运行配置。返回需要用户手动重启/新开的提示。"""
+    restart_hints: list[str] = []
+
+    if tool == 'codex':
+        from codex_session_patcher.ctf_config import check_ctf_status
+        from codex_session_patcher.ctf_config import CTFConfigInstaller
+
+        status = check_ctf_status()
+        prompt_file = os.path.basename(file_name) if file_name else 'ctf_custom.md'
+        prompt_path = _get_codex_prompt_path_for_file(prompt_file)
+        _write_prompt_file(prompt_path, prompt)
+
+        installer = CTFConfigInstaller()
+        if status.codex_global_active or status.global_installed:
+            # 全局模式读取顶层 model_instructions_file，先移除旧注入再按新模板文件重装。
+            success, msg = installer.uninstall_global()
+            if not success:
+                raise HTTPException(status_code=500, detail=msg)
+            success, msg = installer.install_global()
+            if not success:
+                raise HTTPException(status_code=500, detail=msg)
+            restart_hints.append("全局模式已切换；新开的 codex 会话会使用新模板。")
+        elif status.profile_available:
+            installer._update_config(prompt_file)
+            restart_hints.append("Profile 已切换；请用 codex -p ctf 新开会话，已有会话不会自动变化。")
+        else:
+            restart_hints.append("模板已保存；启用 Profile 或全局模式后会使用该模板。")
+        return restart_hints
+
+    if tool == 'claude_code':
+        path = _CTF_PROMPT_PATHS[tool]
+        if os.path.exists(os.path.dirname(path)) or os.path.exists(path):
+            _write_prompt_file(path, prompt)
+            restart_hints.append("Claude Code 工作空间提示词已更新；请重启/新开 Claude Code 会话。")
+        else:
+            restart_hints.append("模板已保存；启用 Claude Code CTF 工作空间后会使用该模板。")
+        return restart_hints
+
+    if tool == 'opencode':
+        path = _CTF_PROMPT_PATHS[tool]
+        if os.path.exists(os.path.dirname(path)) or os.path.exists(path):
+            _write_prompt_file(path, prompt)
+            restart_hints.append("OpenCode 工作空间提示词已更新；请重启/新开 OpenCode 会话。")
+        else:
+            restart_hints.append("模板已保存；启用 OpenCode CTF 工作空间后会使用该模板。")
+        return restart_hints
+
+    return restart_hints
+
+
 def _get_ctf_prompt_path(tool: str) -> str | None:
     """获取工具当前实际生效的 CTF 提示词路径"""
     if tool != 'codex':
@@ -1221,6 +1930,8 @@ def _get_ctf_prompt_path(tool: str) -> str | None:
 
     from codex_session_patcher.ctf_config import check_ctf_status
     status = check_ctf_status()
+    if status.global_installed and status.global_prompt_path:
+        return status.global_prompt_path
     return status.prompt_path or _CTF_PROMPT_PATHS['codex']
 
 
@@ -1283,6 +1994,7 @@ async def get_ctf_prompt(tool: str):
                 "prompt": prompt,
                 "is_installed": True,
                 "is_default": prompt.strip() == default_prompt.strip(),
+                "current_template": _detect_current_template(tool, prompt),
             }
         except Exception:
             logger.warning("读取提示词文件失败: %s", prompt_path, exc_info=True)
@@ -1295,6 +2007,7 @@ async def get_ctf_prompt(tool: str):
         "prompt": saved or default_prompt,
         "is_installed": False,
         "is_default": saved is None,
+        "current_template": config.get('ctf_prompts', {}).get(tool, {}).get('template') or _detect_current_template(tool, saved or default_prompt),
     }
 
 
@@ -1339,11 +2052,19 @@ async def save_ctf_prompt(tool: str, body: dict):
     ctf_prompts = config.setdefault('ctf_prompts', {})
     tool_config = ctf_prompts.setdefault(tool, {})
     tool_config['prompt'] = prompt
+    current_template = _detect_current_template(tool, prompt)
+    if current_template:
+        tool_config['template'] = current_template
     if matched_file:
         tool_config['file'] = matched_file
     _save_raw_config(config)
 
-    return {"success": True, "message": "提示词已保存"}
+    return {
+        "success": True,
+        "message": "提示词已保存",
+        "current_template": current_template,
+        "status": await _build_ctf_status_response(),
+    }
 
 
 @router.post("/ctf/prompt/{tool}/reset")
@@ -1390,14 +2111,7 @@ async def list_ctf_templates(tool: str):
     if tool not in _CTF_PROMPT_PATHS:
         raise HTTPException(status_code=400, detail=f"不支持的工具: {tool}")
 
-    from codex_session_patcher.ctf_config.templates import BUILTIN_TEMPLATES
-    builtin = [{k: v for k, v in t.items() if k != 'prompt'} | {'builtin': True} for t in BUILTIN_TEMPLATES.get(tool, [])]
-
-    config = _load_raw_config()
-    user_templates = config.get('ctf_templates', {}).get(tool, [])
-    # 用户模板也不返回 prompt 内容
-    user_templates_lite = [{k: v for k, v in t.items() if k != 'prompt'} for t in user_templates]
-    return {"templates": builtin + user_templates_lite}
+    return _template_response(tool)
 
 
 @router.get("/ctf/prompt/{tool}/templates/{template_name}")
@@ -1426,28 +2140,47 @@ async def save_ctf_template(tool: str, body: dict):
         raise HTTPException(status_code=400, detail=f"不支持的工具: {tool}")
 
     name = body.get('name', '').strip()
+    old_name = body.get('old_name', '').strip()
     prompt = body.get('prompt', '').strip()
     if not name:
         raise HTTPException(status_code=400, detail="模板名称不能为空")
     if not prompt:
         raise HTTPException(status_code=400, detail="模板内容不能为空")
 
+    from codex_session_patcher.ctf_config.templates import BUILTIN_TEMPLATES
+    if any(t['name'] == name for t in BUILTIN_TEMPLATES.get(tool, [])):
+        raise HTTPException(status_code=400, detail="不能覆盖内置模板，请换一个名称")
+    if old_name and any(t['name'] == old_name for t in BUILTIN_TEMPLATES.get(tool, [])):
+        raise HTTPException(status_code=403, detail="内置模板不可编辑")
+
     config = _load_raw_config()
     all_templates = config.setdefault('ctf_templates', {})
     templates = all_templates.setdefault(tool, [])
 
-    # 同名覆盖
-    templates = [t for t in templates if t['name'] != name]
-    if len(templates) >= MAX_TEMPLATES:
+    existing_names = {t.get('name') for t in templates}
+    is_update = bool(old_name and old_name in existing_names)
+    if old_name and old_name != name and name in existing_names:
+        raise HTTPException(status_code=400, detail="已有同名模板")
+
+    # 同名覆盖/编辑
+    templates = [t for t in templates if t['name'] not in {name, old_name}]
+    if not is_update and len(templates) >= MAX_TEMPLATES:
         raise HTTPException(status_code=400, detail=f"最多保存 {MAX_TEMPLATES} 个模板")
 
     templates.append({"name": name, "prompt": prompt})
     all_templates[tool] = templates
+
+    ctf_prompts = config.setdefault('ctf_prompts', {})
+    tool_config = ctf_prompts.get(tool)
+    if tool_config and old_name and tool_config.get('template') == old_name:
+        tool_config['template'] = name
+        tool_config['prompt'] = prompt
+        if tool == 'codex':
+            tool_config['file'] = tool_config.get('file') or 'ctf_custom.md'
     _save_raw_config(config)
 
-    from codex_session_patcher.ctf_config.templates import BUILTIN_TEMPLATES
-    builtin = [dict(t, builtin=True) for t in BUILTIN_TEMPLATES.get(tool, [])]
-    return {"success": True, "message": "模板已保存", "templates": builtin + templates}
+    response = _template_response(tool)
+    return {"success": True, "message": "模板已保存", **response}
 
 
 @router.delete("/ctf/prompt/{tool}/templates/{template_name}")
@@ -1471,8 +2204,45 @@ async def delete_ctf_template(tool: str, template_name: str):
     all_templates[tool] = new_templates
     _save_raw_config(config)
 
-    builtin = [dict(t, builtin=True) for t in BUILTIN_TEMPLATES.get(tool, [])]
-    return {"success": True, "message": "模板已删除", "templates": builtin + new_templates}
+    response = _template_response(tool)
+    return {"success": True, "message": "模板已删除", **response}
+
+
+@router.post("/ctf/prompt/{tool}/templates/{template_name}/apply")
+async def apply_ctf_template(tool: str, template_name: str):
+    """切换模板并立即写入当前已启用的 CTF 配置。"""
+    if tool not in _CTF_PROMPT_PATHS:
+        raise HTTPException(status_code=400, detail=f"不支持的工具: {tool}")
+
+    tpl = _find_template(tool, template_name)
+    if not tpl:
+        raise HTTPException(status_code=404, detail=f"模板不存在: {template_name}")
+
+    prompt = tpl.get('prompt', '')
+    if not prompt:
+        raise HTTPException(status_code=400, detail="模板内容为空")
+
+    file_name = tpl.get('file')
+    if tool == 'codex' and not file_name:
+        file_name = 'ctf_custom.md'
+    _save_selected_prompt(tool, template_name, prompt, file_name)
+    restart_hints = _apply_template_to_installed_target(tool, template_name, prompt, file_name)
+
+    await manager.broadcast(WSMessage(
+        type="log",
+        data={"level": "success", "message": f"已切换 {tool} 模板: {template_name}"}
+    ))
+
+    response = _template_response(tool)
+    return {
+        "success": True,
+        "message": f"已切换并应用模板：{template_name}",
+        "prompt": prompt,
+        "current_template": template_name,
+        "restart_hints": restart_hints,
+        "status": await _build_ctf_status_response(),
+        **response,
+    }
 
 
 # ─── 提示词改写 API ─────────────────────────────────────────────────────────

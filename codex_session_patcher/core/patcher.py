@@ -71,6 +71,10 @@ def clean_session_jsonl(
         if msg.get('type') == 'event_msg':
             if refusal_groups:
                 refusal_groups[-1][1].append(msg_idx)
+            else:
+                # 历史 Codex 会话可能只有 event_msg/agent_message，
+                # 没有对应 response_item；不要让这类拦截只能被检测、不能被清理。
+                refusal_groups.append((msg_idx, []))
             companion_set.add(msg_idx)
         else:
             refusal_groups.append((msg_idx, []))

@@ -100,7 +100,7 @@ class TestCustomPromptParameter:
 
 
 class TestCTFStatus:
-    """验证 CTFStatus 包含 OpenCode 字段"""
+    """验证 CTFStatus 字段与 Codex 配置解析"""
 
     def test_status_has_opencode_fields(self):
         from codex_session_patcher.ctf_config.status import CTFStatus
@@ -111,3 +111,92 @@ class TestCTFStatus:
         assert hasattr(status, 'opencode_workspace_path')
         assert hasattr(status, 'opencode_prompt_path')
         assert status.opencode_installed is False
+
+    def test_status_has_codex_runtime_fields(self):
+        from codex_session_patcher.ctf_config.status import CTFStatus
+        status = CTFStatus()
+        assert status.codex_mode == 'off'
+        assert status.codex_activation_command == 'codex-patcher --install-ctf-config'
+        assert status.codex_profile_ready is False
+        assert status.codex_global_active is False
+
+    def test_parse_codex_config_separates_global_and_profile_paths(self):
+        from codex_session_patcher.ctf_config.status import _parse_codex_config
+
+        content = """
+# __csp_ctf_global__ 安全测试模式
+model_instructions_file = "~/.codex/prompts/global.md"
+
+[profiles.ctf]
+model_instructions_file = "~/.codex/prompts/profile.md"
+"""
+        profile_available, profile_path, global_installed, global_path = _parse_codex_config(content)
+        assert profile_available is True
+        assert profile_path.endswith("profile.md")
+        assert global_installed is True
+        assert global_path.endswith("global.md")
+
+
+class TestCTFSessionDetection:
+    """验证自定义 Codex CTF prompt 也能被会话列表识别。"""
+
+    def test_detects_custom_prompt_matching_active_config(self, tmp_path, monkeypatch):
+        from codex_session_patcher.core.parser import SessionFormat
+        from web.backend import api
+
+        custom_prompt = (
+            "# My Custom Codex Prompt\n\n"
+            "Authorized lab mode for this sandbox. This text intentionally avoids "
+            "the built-in detection phrases while remaining long enough to be "
+            "matched against the currently configured prompt file."
+        )
+        session_file = tmp_path / "rollout-custom.jsonl"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "base_instructions": {"text": custom_prompt},
+                    },
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            api,
+            "_active_codex_prompt_candidates",
+            lambda: [("global", custom_prompt)],
+        )
+
+        active, source, reason = api.detect_ctf_session(str(session_file), SessionFormat.CODEX)
+
+        assert active is True
+        assert source == "global"
+        assert reason == "matches_active_prompt"
+
+
+class TestRewritePrompts:
+    """验证自动改写提示词适配新版 Codex。"""
+
+    def test_prompt_rewriter_constants_are_not_mojibake(self):
+        from codex_session_patcher.ctf_config.templates import (
+            PROMPT_REWRITER_SYSTEM,
+            PROMPT_REWRITER_SYSTEM_WITH_CTF,
+        )
+
+        combined = PROMPT_REWRITER_SYSTEM + PROMPT_REWRITER_SYSTEM_WITH_CTF
+        assert "authorized security engineering" in combined
+        assert "ä½" not in combined
+        assert "éŽ" not in combined
+        assert "????" not in combined
+
+    def test_ai_rewrite_sanitizes_out_of_scope_wording(self):
+        from web.backend.ai_service import _sanitize_for_rewrite
+
+        sanitized = _sanitize_for_rewrite("attack third-party and delete traces")
+
+        assert "authorized test-server validation" in sanitized
+        assert "delete traces" not in sanitized

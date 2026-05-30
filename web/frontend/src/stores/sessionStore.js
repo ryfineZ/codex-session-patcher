@@ -11,6 +11,8 @@ export const useSessionStore = defineStore('session', () => {
   const previewLoading = ref(false)
   const aiRewrite = ref(null)
   const aiRewriteLoading = ref(false)
+  const autoRewriteAttempted = ref(new Set())
+  const autoRewriteNotice = ref(null)
   const lastError = ref(null) // 最近一次错误信息，组件层可监听并展示
   const activeTab = ref('codex') // 'codex' | 'claude_code' | 'opencode'
   const isSearchMode = ref(false) // 是否处于搜索模式
@@ -65,6 +67,8 @@ export const useSessionStore = defineStore('session', () => {
 
   function setActiveTab(tab) {
     activeTab.value = tab
+    aiRewrite.value = null
+    autoRewriteNotice.value = null
     // Tab 切换时重置预览，但不重新请求 API
     const stillExists = activeTabSessions.value.find(s => s.id === selectedId.value)
     if (!stillExists) {
@@ -83,6 +87,7 @@ export const useSessionStore = defineStore('session', () => {
     try {
       const data = await api.previewSession(id)
       preview.value = data
+      await maybeAutoRewrite(id, data)
     } catch (error) {
       console.error('Failed to preview session:', error)
       lastError.value = error.message || '预览会话失败'
@@ -96,6 +101,7 @@ export const useSessionStore = defineStore('session', () => {
     try {
       const data = await api.previewSession(id || selectedId.value)
       preview.value = data
+      await maybeAutoRewrite(id || selectedId.value, data)
       return data
     } catch (error) {
       console.error('Failed to preview session:', error)
@@ -131,6 +137,53 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function maybeAutoRewrite(id, previewData = null) {
+    const sid = id || selectedId.value
+    if (!sid) return null
+    const settingsStore = useSettingsStore()
+    if (!settingsStore.loading) await settingsStore.loadSettings()
+    const p = previewData || preview.value
+    const hasRefusal = (p?.changes?.length || 0) > 0
+    if (!hasRefusal) return null
+    if (!settingsStore.aiEnabled || !settingsStore.aiEndpoint || !settingsStore.aiModel) {
+      autoRewriteNotice.value = {
+        type: 'warning',
+        message: '检测到拦截内容，但 AI 接口未配置完整；执行清理将使用默认替换文本。',
+      }
+      return null
+    }
+    const key = `${sid}:${p.changes.map(c => c.line_num).join(',')}`
+    if (autoRewriteAttempted.value.has(key) || aiRewrite.value?.items?.length > 0) {
+      return aiRewrite.value
+    }
+    autoRewriteAttempted.value.add(key)
+    autoRewriteNotice.value = {
+      type: 'info',
+      message: '检测到拦截内容，正在自动调用 AI 生成可继续会话的替换内容...',
+    }
+    try {
+      const result = await requestAIRewrite(sid)
+      if (result.success) {
+        autoRewriteNotice.value = {
+          type: 'success',
+          message: `AI 已自动生成 ${result.items?.length || 0} 条替换内容，确认后点「执行清理」即可写入会话。`,
+        }
+      } else {
+        autoRewriteNotice.value = {
+          type: 'warning',
+          message: result.error || 'AI 自动改写失败；执行清理将使用默认替换文本。',
+        }
+      }
+      return result
+    } catch (error) {
+      autoRewriteNotice.value = {
+        type: 'warning',
+        message: error.message || 'AI 自动改写失败；执行清理将使用默认替换文本。',
+      }
+      return null
+    }
+  }
+
   async function patchSession(id, selectedLines = null, cleanReasoning = null) {
     let replacements = null
     if (aiRewrite.value?.items?.length > 0) {
@@ -143,6 +196,8 @@ export const useSessionStore = defineStore('session', () => {
       const data = await api.patchSession(id || selectedId.value, replacements, selectedLines, cleanReasoning)
       if (data.success) {
         aiRewrite.value = null
+        autoRewriteNotice.value = null
+        autoRewriteAttempted.value = new Set()
         await fetchSessions()
         const currentSession = sessions.value.find(s => s.id === selectedId.value)
         if (currentSession) {
@@ -207,6 +262,29 @@ export const useSessionStore = defineStore('session', () => {
     return data
   }
 
+  async function deleteSession(id) {
+    const sid = id || selectedId.value
+    const data = await api.deleteSession(sid)
+    if (data.success) {
+      api.clearCache('sessions')
+      api.clearCache('search')
+      const wasSelected = selectedId.value === sid
+      sessions.value = sessions.value.filter(s => s.id !== sid)
+      autoRewriteNotice.value = null
+      aiRewrite.value = null
+      autoRewriteAttempted.value = new Set()
+      if (wasSelected) {
+        selectedId.value = null
+        preview.value = null
+      }
+      await fetchSessions()
+      if (wasSelected && activeTabSessions.value.length > 0) {
+        await selectSession(activeTabSessions.value[0].id)
+      }
+    }
+    return data
+  }
+
   function getSelectedSession() {
     return sessions.value.find(s => s.id === selectedId.value)
   }
@@ -219,6 +297,7 @@ export const useSessionStore = defineStore('session', () => {
     previewLoading,
     aiRewrite,
     aiRewriteLoading,
+    autoRewriteNotice,
     lastError,
     activeTab,
     isSearchMode,
@@ -231,11 +310,13 @@ export const useSessionStore = defineStore('session', () => {
     selectSession,
     previewSession,
     requestAIRewrite,
+    maybeAutoRewrite,
     patchSession,
     searchSessions,
     clearSearch,
     listBackups,
     restoreSession,
+    deleteSession,
     getSelectedSession,
   }
 })
