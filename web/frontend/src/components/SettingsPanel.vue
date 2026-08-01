@@ -18,6 +18,33 @@
           </n-form-item>
 
           <n-collapse-transition :show="settingsStore.aiEnabled">
+            <n-form-item :label="$t('settings.providerPreset')">
+              <n-space vertical style="width: 100%">
+                <n-select
+                  v-model:value="selectedProviderKey"
+                  :options="providerOptions"
+                  :placeholder="$t('settings.providerPresetPlaceholder')"
+                  clearable
+                />
+                <n-space v-if="selectedProvider" :wrap="false">
+                  <n-select
+                    v-model:value="selectedProviderRegion"
+                    :options="regionOptions"
+                    style="min-width: 140px"
+                  />
+                  <n-select
+                    v-model:value="selectedProviderModel"
+                    :options="modelOptions"
+                    style="min-width: 180px"
+                  />
+                  <n-button secondary type="primary" @click="applyProviderPreset">
+                    {{ $t('settings.applyProviderPreset') }}
+                  </n-button>
+                </n-space>
+                <span class="form-hint">{{ $t('settings.providerPresetHint') }}</span>
+              </n-space>
+            </n-form-item>
+
             <n-form-item :label="$t('settings.apiEndpoint')">
               <n-input
                 v-model:value="settingsStore.aiEndpoint"
@@ -155,10 +182,11 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useMessage } from 'naive-ui'
 import { useSettingsStore } from '../stores/settingsStore'
+import { AI_PROVIDER_PRESETS, getProviderPreset } from '../constants/aiProviders'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -179,9 +207,49 @@ const builtinEnKeywords = [
 // 自定义关键词
 const zhKeywords = computed(() => settingsStore.customKeywords.zh || [])
 const enKeywords = computed(() => settingsStore.customKeywords.en || [])
+const providerOptions = AI_PROVIDER_PRESETS.map((provider) => ({
+  label: provider.label,
+  value: provider.key
+}))
+const selectedProviderKey = ref(null)
+const selectedProviderRegion = ref(null)
+const selectedProviderModel = ref(null)
+const selectedProvider = computed(() => getProviderPreset(selectedProviderKey.value))
+const regionOptions = computed(() => {
+  if (!selectedProvider.value) return []
+  return selectedProvider.value.regions.map((region) => ({
+    label: region.label,
+    value: region.value
+  }))
+})
+const modelOptions = computed(() => {
+  if (!selectedProvider.value) return []
+  return selectedProvider.value.models.map((model) => ({
+    label: model.label,
+    value: model.value
+  }))
+})
+
+watch(selectedProvider, (provider) => {
+  selectedProviderRegion.value = provider?.defaultRegion || null
+  selectedProviderModel.value = provider?.defaultModel || null
+})
 
 function handleKeywordsChange(lang, value) {
   settingsStore.customKeywords[lang] = value
+  settingsStore.markChanged()
+}
+
+function applyProviderPreset() {
+  const provider = selectedProvider.value
+  if (!provider) return
+
+  const region = provider.regions.find((item) => item.value === selectedProviderRegion.value)
+  const model = provider.models.find((item) => item.value === selectedProviderModel.value)
+  if (!region || !model) return
+
+  settingsStore.aiEndpoint = region.openaiBaseUrl
+  settingsStore.aiModel = model.value
   settingsStore.markChanged()
 }
 
